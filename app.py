@@ -135,6 +135,11 @@ use_tablet_cdr_only = st.checkbox("QTY: sum only Tablet & CDR categories (exclud
 
 # ── 8. Category split ────────────────────────────────────────────
 use_cat_split = st.checkbox("Split report by Category")
+merge_cdr_acc = False
+merge_tablet_acc = False
+if use_cat_split:
+    merge_cdr_acc = st.checkbox("  ↳ Merge CDR ACC into CDR", value=True)
+    merge_tablet_acc = st.checkbox("  ↳ Merge Tablet ACC into Tablet", value=True)
 
 # ── 9. Aggregation functions ─────────────────────────────────────
 def build_long(grp_df, qty_df, group_cols):
@@ -214,7 +219,13 @@ if st.button("▶ Run"):
 
     wide_bycat = pd.DataFrame()
     if use_cat_split:
-        long_bycat = build_long(base, qty_base, ["Month", "Category"])
+        cat_df = base.copy()
+        if merge_cdr_acc:
+            cat_df["Category"] = cat_df["Category"].replace("CDR ACC", "CDR")
+        if merge_tablet_acc:
+            cat_df["Category"] = cat_df["Category"].replace("Tablet ACC", "Tablet")
+        qty_base_cat = cat_df[cat_df["Category"].isin({"Tablet", "CDR"})] if use_tablet_cdr_only else cat_df
+        long_bycat = build_long(cat_df, qty_base_cat, ["Month", "Category"])
         wide_bycat = to_wide(long_bycat, ["Month", "Category"], add_total=False)
         st.subheader("📋 ByCategory (Monthly Wide Report x Category)")
         st.dataframe(format_wide(wide_bycat), use_container_width=True)
