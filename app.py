@@ -130,6 +130,7 @@ for cust in matched:
     if checked:
         selected_customers.append(cust)
 
+st.divider()
 # ── 7. QTY: Tablet & CDR only ───────────────────────────────────
 use_tablet_cdr_only = st.checkbox("QTY: sum only Tablet & CDR categories (exclude ACC)")
 
