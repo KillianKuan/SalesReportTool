@@ -26,8 +26,6 @@ if not uploaded:
     st.stop()
 
 # ── 2. Load, validate, clean (cached) ───────────────────────────
-# Wrapped in cache_data so Excel is only re-parsed when the file changes.
-# ambiguous_rows is returned from here to avoid module-level mutable state.
 @st.cache_data
 def load_and_clean(file_bytes):
     try:
@@ -63,7 +61,7 @@ def load_and_clean(file_bytes):
         des_lower = des_val.lower()
         return [cat for cat, kws in DES_RULES.items() if any(kw in des_lower for kw in kws)]
 
-    ambiguous_rows = []  # local list; safe inside cached function
+    ambiguous_rows = []
 
     def normalize_category(row):
         cat = row["Category"]
@@ -123,7 +121,6 @@ if not cust_query.strip():
     st.info("Enter a keyword to search for customers.")
     st.stop()
 
-# Clear stale customer checkboxes when the search query changes
 if st.session_state.get("_last_query") != cust_query:
     for k in list(st.session_state.keys()):
         if k.startswith("cust__"):
@@ -141,7 +138,7 @@ st.markdown(f"**Found {len(matched)} customer(s). Select below:**")
 selected_customers = []
 for cust in matched:
     key = f"cust__{cust}"
-    st.session_state.setdefault(key, True)  # initialize once; never overwrite user's change
+    st.session_state.setdefault(key, True)
     if st.checkbox(cust, key=key):
         selected_customers.append(cust)
 
@@ -198,10 +195,21 @@ def to_wide(long_df, group_cols, add_total=False):
 
 
 def format_wide(df):
-    """Apply thousands separator formatting (no decimals) to all numeric columns."""
     label_col = df.columns[0]
     num_cols = [c for c in df.columns if c != label_col]
     return df.style.format(formatter="{:,.0f}", subset=num_cols, na_rep="-")
+
+
+def display_bycat_subtables(wide_bycat):
+    """Render ByCategory as one small table per Category (outer grouping)."""
+    row_col = wide_bycat.columns[0]  # "Row" column: "CDR | QTY (All)", etc.
+    categories = wide_bycat[row_col].str.split(" | ").str[0].unique()
+    for cat in categories:
+        st.markdown(f"**{cat}**")
+        cat_rows = wide_bycat[wide_bycat[row_col].str.startswith(cat + " | ")].copy()
+        # Strip "Category | " prefix → show only the Metric name
+        cat_rows[row_col] = cat_rows[row_col].str.replace(f"{cat} | ", "", regex=False)
+        st.dataframe(format_wide(cat_rows.reset_index(drop=True)), use_container_width=True)
 
 # ── 7. Generate report ───────────────────────────────────────────
 if st.button("▶ Run"):
@@ -227,7 +235,6 @@ if st.button("▶ Run"):
                 cat_df["Category"] = cat_df["Category"].replace("CDR ACC", "CDR")
             if merge_tablet_acc:
                 cat_df["Category"] = cat_df["Category"].replace("Tablet ACC", "Tablet")
-            # qty filter: use original category mask (pre-merge) so ACC rows are still excluded
             qty_base_cat = cat_df[base["Category"].isin({"Tablet", "CDR"})] if use_tablet_cdr_only else cat_df
             long_bycat = build_long(cat_df, qty_base_cat, ["Month", "Category"])
             wide_bycat = to_wide(long_bycat, ["Month", "Category"], add_total=False)
@@ -253,7 +260,7 @@ if st.button("▶ Run"):
 
     if use_cat_split and not wide_bycat.empty:
         with tabs[1]:
-            st.dataframe(format_wide(wide_bycat), use_container_width=True)
+            display_bycat_subtables(wide_bycat)
 
     # ── Others expander ──────────────────────────────────────────
     if not others_df.empty:
