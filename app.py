@@ -271,11 +271,17 @@ if st.button("▶ Run"):
                 wide_bycat.to_excel(writer, sheet_name="ByCategory", index=False)
         buf.seek(0)
 
-        # ── Diagnostic: category distribution (remove after debugging) ──
+        # ── Diagnostic: pipeline trace (remove after debugging) ──
         cat_dist = base["Category"].value_counts().reset_index()
         cat_dist.columns = ["Category", "Row Count"]
-        st.info("🔍 **Category distribution in selected data** (for debugging):")
+        st.info("🔍 **[D1] Raw category distribution in base:**")
         st.dataframe(cat_dist, use_container_width=True)
+        st.info(f"🔍 **[D2] merge flags** → merge_cdr_acc={merge_cdr_acc}, merge_tablet_acc={merge_tablet_acc}")
+        if use_cat_split:
+            st.info("🔍 **[D3] long_bycat (first 20 rows):**")
+            st.dataframe(long_bycat.head(20), use_container_width=True)
+            st.info("🔍 **[D4] wide_bycat (all rows):**")
+            st.dataframe(wide_bycat, use_container_width=True)
         st.session_state["rpt_summary"] = wide_summary
         st.session_state["rpt_bycat"] = wide_bycat
         st.session_state["rpt_others"] = others_df
