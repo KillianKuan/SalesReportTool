@@ -124,18 +124,17 @@ st.markdown(f"**Found {len(matched)} customer(s). Select below:**")
 selected_customers = []
 for cust in matched:
     key = f"cust__{cust}"
-    if key not in st.session_state:
-        st.session_state[key] = True
-    checked = st.checkbox(cust, value=st.session_state[key], key=key)
+    st.session_state.setdefault(key, True)  # initialize once; never overwrite user's change
+    checked = st.checkbox(cust, key=key)
     if checked:
         selected_customers.append(cust)
 
 st.divider()
 # ── 7. QTY: Tablet & CDR only ───────────────────────────────────
-use_tablet_cdr_only = st.checkbox("QTY: sum only Tablet & CDR categories (exclude ACC)")
+use_tablet_cdr_only = st.checkbox("QTY: sum only Tablet & CDR categories (exclude ACC)", value=True)
 
 # ── 8. Category split ────────────────────────────────────────────
-use_cat_split = st.checkbox("Split report by Category")
+use_cat_split = st.checkbox("Split report by Category", value=True)
 merge_cdr_acc = False
 merge_tablet_acc = False
 if use_cat_split:
