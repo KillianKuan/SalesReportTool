@@ -271,6 +271,11 @@ if st.button("▶ Run"):
                 wide_bycat.to_excel(writer, sheet_name="ByCategory", index=False)
         buf.seek(0)
 
+        # ── Diagnostic: category distribution (remove after debugging) ──
+        cat_dist = base["Category"].value_counts().reset_index()
+        cat_dist.columns = ["Category", "Row Count"]
+        st.info("🔍 **Category distribution in selected data** (for debugging):")
+        st.dataframe(cat_dist, use_container_width=True)
         st.session_state["rpt_summary"] = wide_summary
         st.session_state["rpt_bycat"] = wide_bycat
         st.session_state["rpt_others"] = others_df
