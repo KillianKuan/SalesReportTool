@@ -1,4 +1,5 @@
 import io
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
@@ -231,6 +232,9 @@ if st.button("▶ Run"):
             long_bycat = build_long(cat_df, qty_base_cat, ["Month", "Category"])
             wide_bycat = to_wide(long_bycat, ["Month", "Category"], add_total=False)
 
+        # Collect Others rows for expander
+        others_df = base[base["Category"] == "Others"].copy()
+
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             wide_summary.to_excel(writer, sheet_name="Summary", index=False)
@@ -238,15 +242,32 @@ if st.button("▶ Run"):
                 wide_bycat.to_excel(writer, sheet_name="ByCategory", index=False)
         buf.seek(0)
 
-    st.subheader("📋 Summary (Monthly Wide Report)")
-    st.dataframe(format_wide(wide_summary), use_container_width=True)
+    # ── Display results in tabs ──────────────────────────────────
+    tab_labels = ["📋 Summary"]
     if use_cat_split and not wide_bycat.empty:
-        st.subheader("📋 ByCategory (Monthly Wide Report x Category)")
-        st.dataframe(format_wide(wide_bycat), use_container_width=True)
+        tab_labels.append("📊 ByCategory")
+    tabs = st.tabs(tab_labels)
 
+    with tabs[0]:
+        st.dataframe(format_wide(wide_summary), use_container_width=True)
+
+    if use_cat_split and not wide_bycat.empty:
+        with tabs[1]:
+            st.dataframe(format_wide(wide_bycat), use_container_width=True)
+
+    # ── Others expander ──────────────────────────────────────────
+    if not others_df.empty:
+        show_cols = ["Customer Name", "Month", "Part Number", "Category", "QTY", "SALES Total AMT"]
+        if has_des:
+            show_cols.insert(3, "DES")
+        with st.expander(f"⚠️ Others ({len(others_df)} row(s)) — unclassified data, excluded from report"):
+            st.dataframe(others_df[show_cols].reset_index(drop=True), use_container_width=True)
+
+    # ── Download ─────────────────────────────────────────────────
+    filename = datetime.now().strftime("sales_report_%Y%m%d_%H%M.xlsx")
     st.download_button(
         label="⬇️ Download Excel Report",
         data=buf,
-        file_name="sales_report.xlsx",
+        file_name=filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
