@@ -12,8 +12,9 @@ REQUIRED_COLS = [
     "Part Number", "Category",
 ]
 VALID_CATEGORIES = {"Tablet", "CDR", "Tablet ACC", "CDR ACC"}
-_VALID_CAT_MAP = {" ".join(c.upper().split()): c for c in VALID_CATEGORIES}
-GP_COL = "final GP(NTD,data from Financial Report)"
+_VALID_CAT_MAP   = {" ".join(c.upper().split()): c for c in VALID_CATEGORIES}
+GP_COL           = "final GP(NTD,data from Financial Report)"
+CAT_ORDER        = ["CDR", "CDR ACC", "Tablet", "Tablet ACC", "Others"]
 DES_RULES = {
     "CDR ACC":    ["cdr", "gemini", "evo", "sprint", "sd card", "panic button",
                    "iosix", "uvc camera", "k220", "k245", "k265"],
@@ -45,7 +46,7 @@ def load_and_clean(file_bytes):
     df["Ship Date"] = pd.to_datetime(df["Ship Date"].astype(str).str.strip(), errors="coerce")
     nat_count = int(df["Ship Date"].isna().sum())
     df = df.dropna(subset=["Ship Date"])
-    df["Month"] = df["Ship Date"].dt.strftime("%Y-%m")
+    df["Month"]    = df["Ship Date"].dt.strftime("%Y-%m")
     df["Category"] = df["Category"].astype(str).str.strip()
     if has_des:
         df["DES"] = df["DES"].astype(str).str.strip()
@@ -117,12 +118,12 @@ for c in matched:
 st.divider()
 
 # ── 4. Options ───────────────────────────────────────────────────
-qty_only = st.checkbox("QTY: sum only Tablet & CDR (exclude ACC)", value=True)
-by_cat   = st.checkbox("Split report by Category", value=True)
+qty_only  = st.checkbox("QTY: sum only Tablet & CDR (exclude ACC)", value=True)
+by_cat    = st.checkbox("Split report by Category", value=True)
 merge_cdr = merge_tab = False
 if by_cat:
-    merge_cdr = st.checkbox("  ↳ Merge CDR ACC into CDR",        value=True)
-    merge_tab = st.checkbox("  ↳ Merge Tablet ACC into Tablet",   value=True)
+    merge_cdr = st.checkbox("  ↳ Merge CDR ACC into CDR",       value=True)
+    merge_tab = st.checkbox("  ↳ Merge Tablet ACC into Tablet",  value=True)
 
 _opts = (qty_only, by_cat, merge_cdr, merge_tab, tuple(sorted(selected)))
 
@@ -158,22 +159,32 @@ def to_wide_summary(long_df):
     p["Total"] = p.sum(axis=1)
     return p.reset_index()
 
-def to_wide_one_cat(long_df, cat):
+def to_wide_one_cat(long_df, cat, all_months):
+    """Pivot one category → wide; pad missing months with 0."""
     metrics = ["QTY (All)", "SALES Total AMT", "final GP(NTD)"]
     sub = long_df[long_df["Category"] == cat]
-    m = sub.melt(id_vars=["Month"], value_vars=metrics, var_name="Metric", value_name="Value")
-    p = m.pivot_table(index="Metric", columns="Month", values="Value", aggfunc="sum").reindex(metrics)
+    m   = sub.melt(id_vars=["Month"], value_vars=metrics, var_name="Metric", value_name="Value")
+    p   = m.pivot_table(index="Metric", columns="Month", values="Value", aggfunc="sum").reindex(metrics)
+    p   = p.reindex(columns=all_months, fill_value=0).fillna(0)
     p.columns.name = None
     return p.reset_index()
 
+def sorted_cats(long_bycat):
+    """Return categories in CAT_ORDER; unknowns appended alphabetically."""
+    present = long_bycat["Category"].unique().tolist()
+    ordered = [c for c in CAT_ORDER if c in present]
+    ordered += sorted(c for c in present if c not in CAT_ORDER)
+    return ordered
+
 def fmt(df):
     nc = [c for c in df.columns if c != df.columns[0]]
-    return df.style.format("{:,.0f}", subset=nc, na_rep="-")
+    return df.style.format("{:,.0f}", subset=nc, na_rep="0")
 
 def show_bycat(long_bycat):
-    for cat in list(dict.fromkeys(long_bycat["Category"].tolist())):
+    all_months = sorted(long_bycat["Month"].unique().tolist())
+    for cat in sorted_cats(long_bycat):
         st.markdown(f"**{cat}**")
-        st.dataframe(fmt(to_wide_one_cat(long_bycat, cat)), use_container_width=True)
+        st.dataframe(fmt(to_wide_one_cat(long_bycat, cat, all_months)), use_container_width=True)
 
 # ── 6. Run ───────────────────────────────────────────────────────
 if st.button("▶ Run"):
@@ -192,9 +203,10 @@ if st.button("▶ Run"):
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
             wide_summary.to_excel(w, sheet_name="Summary", index=False)
             if not long_bycat.empty:
+                all_months = sorted(long_bycat["Month"].unique().tolist())
                 frames = []
-                for cat in long_bycat["Category"].unique():
-                    wc = to_wide_one_cat(long_bycat, cat)
+                for cat in sorted_cats(long_bycat):
+                    wc = to_wide_one_cat(long_bycat, cat, all_months)
                     wc.insert(0, "Category", cat)
                     frames.append(wc)
                 pd.concat(frames, ignore_index=True).to_excel(w, sheet_name="ByCategory", index=False)
