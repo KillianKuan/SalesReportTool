@@ -31,8 +31,12 @@ if not uploaded:
     st.stop()
 
 # ── 2. Load & clean (cached) ─────────────────────────────────────
+def _rules_key():
+    """Convert DES_RULES to a hashable tuple for cache busting."""
+    return tuple((k, tuple(v)) for k, v in DES_RULES.items())
+
 @st.cache_data
-def load_and_clean(file_bytes):
+def load_and_clean(file_bytes, _rules_key):  # _rules_key busts cache when DES_RULES changes
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
     except Exception as e:
@@ -86,7 +90,7 @@ def load_and_clean(file_bytes):
     df["Part Number"]   = df["Part Number"].astype(str).str.strip()
     return df, nat_count, None, ambiguous, has_des
 
-df, nat_count, err, ambiguous, has_des = load_and_clean(uploaded.read())
+df, nat_count, err, ambiguous, has_des = load_and_clean(uploaded.read(), _rules_key())
 if err:
     st.error(err); st.stop()
 if not has_des:
