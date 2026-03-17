@@ -171,7 +171,7 @@ if selected:
     ))
     if st.button("🗑 Clear all selections"):
         for c in all_customers:
-            st.session_state[f"cust__{c}"] = False
+            st.session_state.pop(f"cust__{c}", None)
         st.rerun()
 
 st.divider()
@@ -356,7 +356,7 @@ if not _others.empty:
                     "Reassign",
                     _override_opts,
                     index=_override_opts.index(_cur),
-                    key=f"override_{'__'.join(str(x) for x in _ok)}",
+                    key=f"override_{_i}_{'__'.join(str(x) for x in _ok)}",
                     label_visibility="collapsed",
                 )
                 if _choice != "Others (keep)":
