@@ -14,11 +14,12 @@ REQUIRED_COLS = [
 VALID_CATEGORIES = {"Tablet", "CDR", "Tablet ACC", "CDR ACC"}
 _VALID_CAT_MAP   = {" ".join(c.upper().split()): c for c in VALID_CATEGORIES}
 GP_COL           = "final GP(NTD,data from Financial Report)"
-CAT_ORDER        = ["CDR", "CDR ACC", "Tablet", "Tablet ACC", "Others"]
+CAT_ORDER        = ["CDR", "CDR ACC", "Tablet", "Tablet ACC", "AI_SW", "Others"]
 DES_RULES = {
     "CDR ACC":    ["cdr", "gemini", "evo", "sprint", "sd card", "panic button",
                    "iosix", "uvc camera", "k220", "k245", "k265"],
-    "Tablet ACC": ["tablet", "chiron", "hera", "phaeton", "surfing pro", "cradle", "f840"],
+    "Tablet ACC": ["tablet", "prometheus", "chiron", "hera", "phaeton", "surfing pro", "cradle", "f840"],
+    "AI_SW":      ["visionmax"],
 }
 
 # ── 1. Upload ────────────────────────────────────────────────────
