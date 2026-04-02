@@ -2,6 +2,7 @@ import io
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
@@ -26,29 +27,99 @@ DES_RULES = {
     "AI_SW":      ["visionmax"],
 }
 
-# ── 1. Upload ────────────────────────────────────────────────────
-uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
-if not uploaded:
-    st.info("Please upload a .xlsx file containing the 'Actual' sheet.")
+# ── 0. Data folder scanning ──────────────────────────────────────
+# Resolve DATA_DIR relative to app.py's location (works both in dev and PyInstaller)
+APP_DIR  = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR.parent / "data"
+
+
+def scan_data_folders() -> dict[int, Path]:
+    """Return {year: folder_path} for all valid year-named subdirs in DATA_DIR."""
+    folders = {}
+    if not DATA_DIR.exists():
+        return folders
+    for entry in sorted(DATA_DIR.iterdir()):
+        if entry.is_dir() and entry.name.isdigit():
+            year = int(entry.name)
+            if 2019 <= year <= 2099:
+                folders[year] = entry
+    return folders
+
+
+def get_latest_xlsx(year_dir: Path) -> Path | None:
+    """Return the most-recently-modified .xlsx file in *year_dir*, or None."""
+    xlsx_files = list(year_dir.glob("*.xlsx"))
+    if not xlsx_files:
+        return None
+    return max(xlsx_files, key=lambda f: f.stat().st_mtime)
+
+
+# ── 1. Year selection (sidebar) ──────────────────────────────────
+year_folders = scan_data_folders()
+
+if not year_folders:
+    st.error(
+        f"找不到資料夾。請在以下路徑建立年份資料夾並放入 .xlsx 檔案：\n\n"
+        f"`{DATA_DIR}`\n\n"
+        f"範例：`data/2024/sales_2024.xlsx`"
+    )
     st.stop()
+
+available_years = sorted(year_folders.keys())
+current_year = datetime.now().year
+default_years = [current_year] if current_year in available_years else [available_years[-1]]
+
+st.sidebar.header("📅 年份選擇")
+selected_years = st.sidebar.multiselect(
+    "選擇要分析的年份",
+    options=available_years,
+    default=default_years,
+    format_func=lambda y: f"{y}{'  ⬅ 當年度' if y == current_year else ''}",
+)
+
+if not selected_years:
+    st.info("請在左側選擇至少一個年份。")
+    st.stop()
+
+# Show which file will be used per year
+file_map: dict[int, Path] = {}
+for yr in selected_years:
+    f = get_latest_xlsx(year_folders[yr])
+    if f:
+        file_map[yr] = f
+
+missing_years = [yr for yr in selected_years if yr not in file_map]
+if missing_years:
+    st.warning(f"⚠️ 以下年份資料夾內沒有 .xlsx 檔案：{missing_years}")
+if not file_map:
+    st.error("所有選取的年份都沒有可用的 .xlsx 檔案。")
+    st.stop()
+
+with st.sidebar.expander("📄 使用中的檔案", expanded=True):
+    for yr in sorted(file_map):
+        f = file_map[yr]
+        mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        st.markdown(f"**{yr}**: `{f.name}`  \n<small>修改時間: {mtime}</small>", unsafe_allow_html=True)
 
 # ── 2. Load & clean (cached) ─────────────────────────────────────
 def _rules_key():
     """Convert DES_RULES to a hashable tuple for cache busting."""
     return tuple((k, tuple(v)) for k, v in DES_RULES.items())
 
+
 @st.cache_data
-def load_and_clean(file_bytes, _rules_key):  # _rules_key busts cache when DES_RULES changes
+def load_single_file(file_path: str, _rules_key):
+    """Load and clean a single .xlsx file. Returns (df, nat_count, err, ambiguous, has_des)."""
     try:
-        xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        xl = pd.ExcelFile(file_path)
     except Exception as e:
-        return None, 0, f"Cannot read file: {e}", [], False
+        return None, 0, f"Cannot read {file_path}: {e}", [], False
     if "Actual" not in xl.sheet_names:
-        return None, 0, f"'Actual' sheet not found. Available: {xl.sheet_names}", [], False
+        return None, 0, f"'{Path(file_path).name}': 'Actual' sheet not found. Available: {xl.sheet_names}", [], False
     raw = xl.parse("Actual")
     missing = [c for c in REQUIRED_COLS if c not in raw.columns]
     if missing:
-        return None, 0, f"Missing columns: {missing}", [], False
+        return None, 0, f"'{Path(file_path).name}': Missing columns: {missing}", [], False
 
     has_des = "DES" in raw.columns
     df = raw[REQUIRED_COLS + (["DES"] if has_des else [])].copy()
@@ -93,15 +164,35 @@ def load_and_clean(file_bytes, _rules_key):  # _rules_key busts cache when DES_R
                            .replace({"None": "", "nan": "", "NaN": ""}))
     return df, nat_count, None, ambiguous, has_des
 
-df, nat_count, err, ambiguous, has_des = load_and_clean(uploaded.read(), _rules_key())
-if err:
-    st.error(err); st.stop()
+
+# Load and merge all selected years
+all_dfs = []
+total_nat = 0
+all_ambiguous = []
+global_has_des = True
+
+for yr in sorted(file_map):
+    fp = file_map[yr]
+    df_yr, nat_yr, err_yr, amb_yr, hd_yr = load_single_file(str(fp), _rules_key())
+    if err_yr:
+        st.error(f"❌ {err_yr}")
+        continue
+    all_dfs.append(df_yr)
+    total_nat += nat_yr
+    all_ambiguous.extend(amb_yr)
+    if not hd_yr:
+        global_has_des = False
+
+if not all_dfs:
+    st.error("沒有成功載入任何檔案。"); st.stop()
+
+df = pd.concat(all_dfs, ignore_index=True)
+has_des = global_has_des
 
 # ── Overrides: persistent composite-key store ──────────────────
-OVERRIDES_FILE = "overrides.json"
+OVERRIDES_FILE = str(APP_DIR / "overrides.json")
 
 def _save_overrides(ov):
-    """Serialize {tuple_key: category} → JSON file."""
     try:
         with open(OVERRIDES_FILE, "w", encoding="utf-8") as f:
             json.dump([[list(k), v] for k, v in ov.items()], f,
@@ -110,7 +201,6 @@ def _save_overrides(ov):
         pass
 
 def _load_overrides():
-    """Deserialize JSON file → {tuple_key: category}."""
     try:
         if os.path.exists(OVERRIDES_FILE):
             with open(OVERRIDES_FILE, encoding="utf-8") as f:
@@ -139,13 +229,16 @@ if st.session_state["others_overrides"]:
                 (df["Month"]         == month)
             )
         df.loc[mask, "Category"] = new_cat
+
 if not has_des:
-    st.warning("⚠️ 'DES' column not found — DES classification disabled.")
-if nat_count:
-    st.warning(f"⚠️ {nat_count} row(s) with invalid Ship Date skipped.")
-if ambiguous:
-    with st.expander(f"⚠️ {len(ambiguous)} row(s) matched multiple DES categories. Assigned to first match:", expanded=True):
-        st.dataframe(pd.DataFrame(ambiguous), use_container_width=True)
+    st.warning("⚠️ 'DES' column not found in one or more files — DES classification disabled.")
+if total_nat:
+    st.warning(f"⚠️ {total_nat} row(s) with invalid Ship Date skipped.")
+if all_ambiguous:
+    with st.expander(f"⚠️ {len(all_ambiguous)} row(s) matched multiple DES categories. Assigned to first match:", expanded=True):
+        st.dataframe(pd.DataFrame(all_ambiguous), use_container_width=True)
+
+st.sidebar.markdown(f"---\n**已載入 {len(df):,} 筆資料**（{len(file_map)} 個年份）")
 
 # ── 3. Customer search ───────────────────────────────────────────
 st.subheader("🔍 Customer Name")
@@ -163,11 +256,10 @@ if cust_query.strip():
 else:
     st.info("Enter a keyword to search for customers.")
 
-# Selected = all customers checked across all queries (persists between searches)
 selected = [c for c in all_customers if st.session_state.get(f"cust__{c}", False)]
 if selected:
     st.markdown("**✅ Selected ({}):** {}".format(
-        len(selected), "　".join(f"`{c}`" for c in selected)
+        len(selected), "\u3000".join(f"`{c}`" for c in selected)
     ))
     if st.button("🗑 Clear all selections"):
         for c in all_customers:
@@ -216,7 +308,6 @@ def to_wide_summary(long_df):
     p = m.pivot_table(index="Metric", columns="Month", values="Value", aggfunc="sum").reindex(metrics)
     p.columns.name = None
     month_cols = list(p.columns)
-    # Yearly subtotals (only when data spans 2+ years)
     years = sorted(set(c[:4] for c in month_cols))
     if len(years) > 1:
         for yr in years:
@@ -224,7 +315,6 @@ def to_wide_summary(long_df):
             p[f"{yr} Total"] = p[yr_cols].sum(axis=1)
     p["Total"] = p[month_cols].sum(axis=1)
     result = p.reset_index()
-    # GP% row
     val_cols = [c for c in result.columns if c != "Metric"]
     s_vals = result.loc[result["Metric"] == "SALES Total AMT", val_cols].values[0]
     g_vals = result.loc[result["Metric"] == "final GP(NTD)",   val_cols].values[0]
@@ -235,7 +325,6 @@ def to_wide_summary(long_df):
     return pd.concat([result, gp_row], ignore_index=True)
 
 def to_wide_one_cat(long_df, cat, all_months):
-    """Pivot one category → wide; pad missing months with 0."""
     metrics = ["QTY (All)", "SALES Total AMT", "final GP(NTD)"]
     sub = long_df[long_df["Category"] == cat]
     m   = sub.melt(id_vars=["Month"], value_vars=metrics, var_name="Metric", value_name="Value")
@@ -243,7 +332,6 @@ def to_wide_one_cat(long_df, cat, all_months):
     p   = p.reindex(columns=all_months, fill_value=0).fillna(0)
     p.columns.name = None
     result = p.reset_index()
-    # GP% row
     val_cols = [c for c in result.columns if c != "Metric"]
     s_vals = result.loc[result["Metric"] == "SALES Total AMT", val_cols].values[0]
     g_vals = result.loc[result["Metric"] == "final GP(NTD)",   val_cols].values[0]
@@ -254,7 +342,6 @@ def to_wide_one_cat(long_df, cat, all_months):
     return pd.concat([result, gp_row], ignore_index=True)
 
 def sorted_cats(long_bycat):
-    """Return categories in CAT_ORDER; unknowns appended alphabetically."""
     present = long_bycat["Category"].unique().tolist()
     ordered = [c for c in CAT_ORDER if c in present]
     ordered += sorted(c for c in present if c not in CAT_ORDER)
@@ -311,7 +398,7 @@ if "rpt_summary" not in st.session_state:
 if st.session_state.get("rpt_opts") != _opts:
     st.info("ℹ️ Options have changed — press **▶ Run** to refresh the report.")
 _report_customers = list(st.session_state["rpt_opts"][4])
-st.markdown("**Customer(s):** " + "　".join(f"`{c}`" for c in _report_customers))
+st.markdown("**Customer(s):** " + "\u3000".join(f"`{c}`" for c in _report_customers))
 
 _summary    = st.session_state["rpt_summary"]
 _long_bycat = st.session_state["rpt_long_bycat"]
