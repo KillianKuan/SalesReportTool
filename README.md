@@ -1,8 +1,8 @@
 # Sales Report Tool
 
-A Streamlit-based interactive data analysis platform for sales performance reporting with intelligent data normalization and classification.
+A Streamlit-based interactive data analysis platform for sales performance reporting with intelligent data normalization, classification, and forecast integration.
 
-**Version:** 3.2 | **Status:** Production-ready  
+**Version:** 3.3 | **Status:** Production-ready  
 **Build Date:** April 2026
 
 ---
@@ -56,7 +56,7 @@ build.bat
 
 - **Performance Report** — Multi-year sales trends, category breakdowns, margin analysis
 - **Shipping Record Search** — Currency conversion, unit price tracking, cost-per-unit analysis
-- **Company Dashboard** — KPI tracking, YoY comparison, monthly trends, customer rankings
+- **Company Dashboard** — KPI tracking, YoY comparison, monthly trends, customer rankings, **Forecast integration**
 - **Sales Person Filter** — Sidebar filter to segment data by sales representative (current year)
 
 ### Data Intelligence
@@ -104,6 +104,18 @@ Store custom category overrides in `app/overrides.json` using composite keys:
 - Keyed by: Customer Name, Part Number, Month, DES (if present)
 - Applied after initial classification
 
+#### 4. Forecast Integration (v3.3+)
+Company Dashboard blends Shipping Record actuals with FCST file data:
+
+- **Data Source:** Latest `.xlsx` in `data/FCST/`; supports sheets `Div.1&2_All`, `VT`, `Signify`
+- **Blend Logic:** Past months use Actual; current month and future months use Forecast
+- **Sidebar Control:** FCST Sheet selector (`All Sheets` / `Div.1&2_All` / `VT` / `Signify`)
+- **KPI Row:** Full-Year Forecast (Revenue, GP, GP%, QTY) shown below existing KPI cards
+- **Monthly Trend Charts:** Actual = solid blue line, Forecast = dashed green line, with a boundary marker
+- **Category Chart:** 4th column shows FCST category revenue breakdown
+- **Customer Mapping:** `FCST_TO_CANONICAL` dict maps FCST file names to Performance Report canonical names; unmatched customers are bucketed as `{sheet}_Others`
+- **Unit Handling:** FCST AMT/GP values are in thousands (千元) and are automatically scaled ×1,000 to match Shipping Record units
+
 ---
 
 ## 🏗️ System Architecture
@@ -115,6 +127,7 @@ SalesReportTool/
 ├── app/
 │   ├── app.py              # Main Streamlit application
 │   ├── charts.py           # Chart generation functions
+│   ├── fcst_loader.py      # FCST Excel parser, blending, and customer mapping
 │   ├── utils.py            # Data loading, classification, report helpers
 │   ├── aliases.json        # Name alias mappings (customer, sales_person)
 │   └── overrides.json      # Category overrides (auto-generated)
@@ -122,7 +135,9 @@ SalesReportTool/
 │   ├── 2024/
 │   │   └── sales_2024.xlsx
 │   ├── 2025/
-│   └── 2026/
+│   ├── 2026/
+│   └── FCST/               # Latest FCST Excel file (auto-selected by mtime)
+│       └── FCST_2026_wNN.xlsx
 ├── assets/
 │   └── app.ico
 ├── launcher.py             # PyInstaller entry point
@@ -135,7 +150,7 @@ SalesReportTool/
 ### Data Flow
 
 ```
-[Excel Files] 
+[Shipping Record Excel Files]
     ↓
 load_single_file()
     ├─ Parse & validate columns
@@ -153,9 +168,37 @@ apply_overrides()
     ├─ Performance Report
     ├─ Shipping Record Search
     └─ Company Dashboard
+            ↓
+        fcst_loader.get_fcst_for_dashboard()
+            ├─ find_latest_fcst_file()
+            ├─ _parse_sheet() × N sheets
+            │   ├─ normalize_fcst_customer()  ← FCST_TO_CANONICAL + aliases.json
+            │   └─ AMT/GP ×1000 scaling
+            └─ pivot_table (long → wide)
+            ↓
+        blend_actual_fcst()
+            ├─ month < current  → Actual
+            └─ month ≥ current  → Forecast
+            ↓
+        agg_blended_monthly()
+            └─ KPI cards + blended charts
 ```
 
-### Normalization Functions (in `utils.py`)
+### Key Modules
+
+#### `fcst_loader.py`
+
+| Function | Purpose |
+|----------|---------|
+| `find_latest_fcst_file(data_dir)` | Returns most-recently modified `.xlsx` in `data/FCST/` |
+| `load_fcst(data_dir, sheet_name)` | Parses one or all FCST sheets into long-format DataFrame |
+| `get_fcst_for_dashboard(data_dir, customer, sheet_name)` | Pivots to wide format for blending |
+| `blend_actual_fcst(actual_df, fcst_df, current_month)` | Merges actual + forecast by month boundary |
+| `agg_blended_monthly(blended_df)` | Company-level monthly totals with Source column |
+| `agg_fcst_category_monthly(fcst_df)` | Monthly × Cat aggregation for category chart |
+| `normalize_fcst_customer(fcst_name, sheet_name)` | Maps FCST names → canonical; fallback to `{sheet}_Others` |
+
+#### `utils.py` Normalization Functions
 
 ```python
 _normalize_name(name, upper=True)
@@ -175,7 +218,7 @@ _load_aliases(kind: "customer" | "sales_person")
 
 ## 📊 Data Requirements
 
-### Required Columns (exact names)
+### Shipping Record — Required Columns (exact names)
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -187,7 +230,7 @@ _load_aliases(kind: "customer" | "sales_person")
 | `Part Number` | string | Product identifier |
 | `Category` | string | Direct category or fallback destination |
 
-### Optional Columns
+### Shipping Record — Optional Columns
 
 | Column | Type | Purpose |
 |--------|------|---------|
@@ -197,7 +240,18 @@ _load_aliases(kind: "customer" | "sales_person")
 | `UP` | numeric | Unit Price |
 | `TP(USD)` | numeric | Total Price in USD |
 
-### File Format
+### FCST File
+
+- **Location:** `data/FCST/*.xlsx` (latest by modified time is auto-selected)
+- **Sheets:** `Div.1&2_All`, `VT`, `Signify`
+- **Structure:**
+  - Row 1: (blank)
+  - Row 2: Exchange rate + Month labels (merged cells, forward-filled)
+  - Row 3: Column headers (`Budget` / `Forecast` / `PO` / `Shipped` / `Deviation`)
+  - Row 4+: Data rows — each Customer × Model = 3 rows (QTY / AMT / GP in Detail column)
+- **Units:** AMT and GP values are in thousands (千元); auto-scaled ×1,000 at parse time
+
+### File Format (Shipping Record)
 
 - **Format:** `.xlsx` (Excel 2007+)
 - **Sheet:** Must contain `Actual` sheet
@@ -252,7 +306,28 @@ Create or edit [app/aliases.json](app/aliases.json):
 - Use normalized form as the key
 - Value is the canonical name to use
 
-### 3. Category Overrides
+### 3. FCST Customer Mapping
+
+Edit `FCST_TO_CANONICAL` in [app/fcst_loader.py](app/fcst_loader.py):
+
+```python
+FCST_TO_CANONICAL: dict[str, str] = {
+    "AKAM":                   "AKAM Netherlands BV",
+    "TTT/WFS/BMS(WFS)":       "Bridgestone Mobility Solutions B.V.",
+    "Zonar-CDR":              "Zonar System Inc.",
+    "Zonar-Tablet":           "Zonar System Inc.",
+    # ... add more as needed
+}
+```
+
+**Rules:**
+- Keys are exact strings as they appear in the FCST Excel file
+- Values are the canonical names used in the Shipping Record
+- Multiple FCST keys can map to one canonical name (e.g., Zonar-CDR + Zonar-Tablet → Zonar System Inc.)
+- Unmatched FCST customers are automatically bucketed as `"{sheet_name}_Others"` (e.g., `Div.1&2_All_Others`)
+- `aliases.json` is checked as a secondary fallback before the Others bucket
+
+### 4. Category Overrides
 
 [app/overrides.json](app/overrides.json) is auto-generated when you adjust categories in the UI. Manual entries:
 
@@ -306,7 +381,7 @@ REM [5/5] Verify output
 ### Development Workflow
 
 ```bash
-# After modifying app.py
+# After modifying app.py or fcst_loader.py
 python -m streamlit run app/app.py
 
 # After modifying utils.py or adding dependencies
@@ -316,8 +391,8 @@ python -m streamlit run app/app.py
 # After modifying launcher.py
 build.bat
 
-# Small fixes (e.g., app.py only)
-# → Replace dist/SalesReportTool/app/app.py directly, no rebuild needed
+# Small fixes (app.py / fcst_loader.py only)
+# → Replace dist/SalesReportTool/app/<file> directly, no rebuild needed
 ```
 
 ---
@@ -347,7 +422,11 @@ SalesReportTool.exe
    - Filter by sales rep (current year only)
    - Shows related customers
 
-3. **Main Tabs:**
+3. **Sidebar — FCST Sheet:**
+   - `All Sheets` (default) — loads and merges `Div.1&2_All` + `VT` + `Signify`
+   - Individual sheet options for isolated view
+
+4. **Main Tabs:**
 
    **📄 Performance Report**
    - Summary metrics by month
@@ -361,12 +440,12 @@ SalesReportTool.exe
    - Requires: `Currency`, `UP`, `TP(USD)` columns
 
    **📊 Company Dashboard**
-   - KPI cards (Total Sales, GP, GP%, Avg Order)
-   - Monthly trend (revenue & quantity)
-   - Category breakdown (pie + stacked bar)
-   - Top 10 customers (bar chart)
-   - Customer detail drill-down
-   - Monthly trends by category
+   - KPI cards (Total Sales, GP, GP%, QTY, Customers, Categories)
+   - Full-Year Forecast row (Revenue, GP, GP%, QTY) — shown when current year is selected and FCST file exists
+   - Monthly trend with Actual (solid) / Forecast (dashed) overlay
+   - Category breakdown (donut + stacked bar + AI_SW trend + FCST category chart)
+   - Top N customers (bar chart + table)
+   - Customer detail drill-down with monthly revenue, category donut, QTY by category, part number detail
 
 ### Export Data
 
@@ -410,6 +489,19 @@ SalesReportTool.exe
 2. Key is in normalized form: uppercase for customer, Title Case for sales
 3. Reload browser/restart app after editing `aliases.json`
 
+### Issue: FCST data not appearing in Company Dashboard
+
+**Cause:** No FCST file found, or selected year is not the current calendar year  
+**Check:**
+1. A `.xlsx` file exists in `data/FCST/`
+2. The current year (e.g., 2026) is selected in the Year Selection sidebar
+3. Console output for `[fcst_loader]` warnings about unmapped customer names
+
+### Issue: FCST Forecast numbers look 1,000× too small
+
+**Cause:** Old FCST file before automatic unit scaling was added  
+**Note:** v3.3+ automatically multiplies FCST AMT/GP by 1,000 at parse time — no manual action needed
+
 ### Issue: Build fails with "PyInstaller not found"
 
 **Cause:** `pyinstaller` not installed  
@@ -423,6 +515,19 @@ SalesReportTool.exe
 ---
 
 ## 📝 Change Log
+
+### v3.3 (April 2026)
+- ✨ **FCST Integration in Company Dashboard**
+  - New `fcst_loader.py` module: FCST Excel parser, blending engine, customer mapping
+  - Blends Shipping Record actuals (past months) with FCST data (current + future months)
+  - Full-Year Forecast KPI row (Revenue, GP, GP%, QTY)
+  - Monthly trend charts show Actual (solid) / Forecast (dashed) with boundary marker
+  - FCST category revenue chart added as 4th column in Category Analysis section
+  - FCST Sheet sidebar selector: `All Sheets` / `Div.1&2_All` / `VT` / `Signify`
+- 🗺️ **FCST Customer Name Mapping**
+  - `FCST_TO_CANONICAL` dict (15 entries) maps FCST names → Performance Report canonical names
+  - Three-stage lookup: `FCST_TO_CANONICAL` → `aliases.json` → `{sheet}_Others` bucket
+  - AMT/GP auto-scaled ×1,000 (FCST stores values in thousands)
 
 ### v3.2 (April 2026)
 - ✨ **Name Normalization System**
@@ -447,6 +552,22 @@ SalesReportTool.exe
 
 ### Key Decision Rationale
 
+**FCST Blend Logic:**
+- Past months (`< current_month`) always use Actual data — shipping records are authoritative
+- Current month and future months (`>= current_month`) always use Forecast — actuals are incomplete or zero
+- This ensures month-end numbers are never polluted by partial actuals
+
+**FCST Customer Mapping:**
+- FCST file uses short/internal names that differ from Shipping Record customer names
+- `FCST_TO_CANONICAL` is maintained in `fcst_loader.py` as the single source of truth
+- Unmatched customers land in `{sheet}_Others` buckets rather than being silently dropped
+- Two FCST names can map to one canonical name (e.g., Zonar-CDR + Zonar-Tablet → Zonar System Inc.); the pivot's `aggfunc="sum"` handles the merge automatically
+
+**`{sheet}_Others` Bucket:**
+- Preserves all FCST revenue even for unmapped customers
+- Bucketed per sheet (e.g., `Div.1&2_All_Others`, `VT_Others`, `Signify_Others`) so the source is traceable
+- Appears as Forecast-only lines in blended charts (no Actual counterpart)
+
 **Name Normalization:**
 - Customer names often have punctuation/case variations across different sheets
 - Sales person names may be entered inconsistently
@@ -458,7 +579,8 @@ SalesReportTool.exe
 
 **Lazy Alias Loading:**
 - `_load_aliases()` reads JSON on every `normalize_*()` call
-- No caching needed; file updates immediately reflected after app restart
+- `_load_fcst_customer_aliases()` in `fcst_loader.py` uses a module-level cache (`_ALIASES_CACHE`) — read once per process
+- No Streamlit caching needed; file updates reflected after app restart
 
 **Calamine + openpyxl Fallback:**
 - `calamine` (Rust-based) is ~5–10x faster for large sheets
@@ -468,6 +590,7 @@ SalesReportTool.exe
 
 - **`others_overrides`:** Loaded at startup; any UI edits saved to `overrides.json`
 - **`sp_cust__*`:** Sales Person related customer checkboxes (UI-only)
+- **`fcst_sheet`:** FCST Sheet radio selection (sidebar)
 - **File Cache:** `@st.cache_data` on `load_single_file()` using `_rules_key()` for DES_RULES version
 
 ---

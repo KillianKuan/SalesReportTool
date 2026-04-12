@@ -3,6 +3,11 @@
 import altair as alt
 import pandas as pd
 
+_MONTHS_ORDER = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]
+
 
 def chart_up_tp_trend(results: pd.DataFrame) -> alt.LayerChart:
     """UP & TP(USD) monthly average trend — line chart with tooltips & point markers."""
@@ -283,3 +288,83 @@ def chart_customer_cat_donut(cat_df):
             ],
         )
     )
+
+
+# ── Blended Actual + Forecast charts ─────────────────────────────
+
+_SOURCE_COLOR = alt.Scale(
+    domain=["Actual", "Forecast"],
+    range=["#5470c6", "#91cc75"],
+)
+_SOURCE_DASH = alt.Scale(
+    domain=["Actual", "Forecast"],
+    range=[[1, 0], [6, 3]],
+)
+
+
+def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
+    """Monthly revenue line: Actual = solid blue, Forecast = dashed green.
+
+    Input: output of fcst_loader.agg_blended_monthly().
+    Columns required: Period, MonthIndex, Source, Revenue.
+    """
+    df = blended_monthly_df.copy()
+    line = (
+        alt.Chart(df)
+        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .encode(
+            x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
+            y=alt.Y("Revenue:Q", title="Revenue", axis=alt.Axis(format=",.0f")),
+            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
+                            legend=alt.Legend(title="")),
+            strokeDash=alt.StrokeDash("Source:N", scale=_SOURCE_DASH,
+                                      legend=None),
+            tooltip=[
+                "Period:N", "Source:N",
+                alt.Tooltip("Revenue:Q", format=",.0f"),
+            ],
+        )
+    )
+    # Vertical rule at the start of the first Forecast month
+    actual_max = (
+        df[df["Source"] == "Actual"]["MonthIndex"].max()
+        if "Actual" in df["Source"].values else None
+    )
+    if actual_max is not None and int(actual_max) < 12:
+        boundary_period = _MONTHS_ORDER[int(actual_max)]  # first Forecast month
+        rule = (
+            alt.Chart({"values": [{"Period": boundary_period}]})
+            .mark_rule(color="#aaaaaa", strokeDash=[4, 2], opacity=0.6, size=1)
+            .encode(x=alt.X("Period:N", sort=_MONTHS_ORDER))
+        )
+        return alt.layer(line, rule)
+    return alt.layer(line)
+
+
+def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
+    """GP bar + GP% line dual-axis chart with Actual/Forecast color coding.
+
+    Input: output of fcst_loader.agg_blended_monthly().
+    Columns required: Period, MonthIndex, Source, GP, GP%.
+    """
+    df = blended_monthly_df.copy()
+    base = alt.Chart(df).encode(
+        x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
+    )
+    bars = base.mark_bar(opacity=0.65).encode(
+        y=alt.Y("GP:Q", title="GP", axis=alt.Axis(format=",.0f")),
+        color=alt.Color("Source:N", scale=_SOURCE_COLOR,
+                        legend=alt.Legend(title="")),
+        tooltip=[
+            "Period:N", "Source:N",
+            alt.Tooltip("GP:Q", format=",.0f"),
+        ],
+    )
+    line = base.mark_line(
+        color="#ee6666",
+        point=alt.OverlayMarkDef(size=40, color="#ee6666"),
+    ).encode(
+        y=alt.Y("GP%:Q", title="GP%", axis=alt.Axis(format=".1f")),
+        tooltip=["Period:N", alt.Tooltip("GP%:Q", format=".1f")],
+    )
+    return alt.layer(bars, line).resolve_scale(y="independent")

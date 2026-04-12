@@ -14,6 +14,8 @@ import streamlit.components.v1 as components
 # Ensure local modules are importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import fcst_loader
+
 from utils import (
     DATA_DIR, CAT_ORDER, _rules_key,
     scan_data_folders, get_latest_xlsx,
@@ -35,6 +37,7 @@ from charts import (
     chart_category_donut, chart_category_stacked, chart_ai_sw_revenue_trend,
     chart_top_customers_bar, chart_customer_monthly, chart_customer_cat_donut,
     chart_customer_qty_by_cat,
+    chart_revenue_trend_blended, chart_gp_trend_blended,
 )
 
 st.set_page_config(
@@ -206,6 +209,14 @@ if "SALE_Person" in df.columns:
                     st.sidebar.checkbox(c, key=f"sp_cust__{c}")
 
 # ?? Sidebar: System Info ???????????????????????????????????????
+st.sidebar.header("📈 FCST")
+_fcst_sheet = st.sidebar.radio(
+    "FCST Sheet",
+    options=["All Sheets", "Div.1&2_All", "VT", "Signify"],
+    index=0,
+    key="fcst_sheet",
+)
+
 with st.sidebar.expander("ℹ️ System Info", expanded=False):
     st.markdown(f"**Loaded {len(df):,} rows** ({len(file_map)} year(s))")
     for yr in sorted(file_map):
@@ -661,6 +672,39 @@ with main_tab3:
     _kpis_yoy = calc_dashboard_kpis(_dash_curr, dash_yoy)
     _kpis_all = calc_dashboard_kpis(dash_df)
 
+    # ── FCST Integration ──────────────────────────────────────────
+    _now = datetime.now()
+    _current_month = _now.month
+    _current_yr = _now.year
+    # Only blend when the current calendar year is in the selection
+    _do_fcst = _dash_max_yr == _current_yr
+
+    _fcst_raw = pd.DataFrame()
+    _blended_monthly = pd.DataFrame()
+    _fcst_cat_monthly = pd.DataFrame()
+
+    if _do_fcst:
+        try:
+            _sheet_arg = None if _fcst_sheet == "All Sheets" else _fcst_sheet
+            _fcst_raw = fcst_loader.get_fcst_for_dashboard(
+                str(DATA_DIR), customer=None, sheet_name=_sheet_arg
+            )
+            if not _fcst_raw.empty:
+                # Customer names are already normalized inside fcst_loader._parse_sheet()
+                # via normalize_fcst_customer() — no post-processing needed here.
+                # Prepare actual_for_blend: current-year rows, renamed for blend function
+                _act_yr = dash_df[dash_df["Ship Date"].dt.year == _current_yr].copy()
+                _act_yr = _act_yr.rename(columns={"Customer Name": "Customer"})
+                _act_yr["Month"] = _act_yr["Ship Date"].dt.month
+
+                _blended_raw = fcst_loader.blend_actual_fcst(
+                    _act_yr, _fcst_raw, _current_month
+                )
+                _blended_monthly = fcst_loader.agg_blended_monthly(_blended_raw)
+                _fcst_cat_monthly = fcst_loader.agg_fcst_category_monthly(_fcst_raw)
+        except Exception as _fcst_err:
+            print(f"[FCST] Warning: failed to load/blend FCST data: {_fcst_err}")
+
     # ?? Section 1: KPI Metric Cards ??
     st.subheader("📌 Overview")
     if dash_yoy is not None:
@@ -689,6 +733,30 @@ with main_tab3:
     )
     _k6.metric("🗂️ Categories", f"{_kpis_all['active_cats']}")
 
+    # Full-Year Forecast row (only shown when current year is selected and FCST loaded)
+    if not _blended_monthly.empty:
+        _ytd_rev = _blended_monthly[_blended_monthly["Source"] == "Actual"]["Revenue"].sum()
+        _ytd_gp = _blended_monthly[_blended_monthly["Source"] == "Actual"]["GP"].sum()
+        _fy_rev = _blended_monthly["Revenue"].sum()
+        _fy_gp = _blended_monthly["GP"].sum()
+        _fy_gp_pct = _fy_gp / _fy_rev * 100 if _fy_rev else 0.0
+        _fy_qty = _blended_monthly["QTY"].sum()
+
+        st.caption(
+            f"📊 Full-Year Forecast (YTD Actual + Remaining FCST) — sheet: **{_fcst_sheet}**"
+        )
+        _fk1, _fk2, _fk3, _fk4 = st.columns(4)
+        _fk1.metric(
+            "💰 FY Revenue Forecast", f"{_fy_rev:,.0f}",
+            delta=f"YTD: {_ytd_rev:,.0f}", delta_color="off",
+        )
+        _fk2.metric(
+            "💵 FY GP Forecast", f"{_fy_gp:,.0f}",
+            delta=f"YTD: {_ytd_gp:,.0f}", delta_color="off",
+        )
+        _fk3.metric("📈 FY GP% Forecast", f"{_fy_gp_pct:.1f}%")
+        _fk4.metric("📦 FY QTY Forecast", f"{_fy_qty:,.0f}")
+
     st.divider()
 
     # ?? Section 2: Monthly Trends ??
@@ -698,16 +766,28 @@ with main_tab3:
     _tr1, _tr2 = st.columns(2)
     with _tr1:
         st.markdown("**📈 Monthly Revenue Trend**")
-        st.altair_chart(
-            chart_revenue_trend(_trend, multi_year=_multi_yr),
-            use_container_width=True,
-        )
+        if not _blended_monthly.empty:
+            st.altair_chart(
+                chart_revenue_trend_blended(_blended_monthly),
+                use_container_width=True,
+            )
+        else:
+            st.altair_chart(
+                chart_revenue_trend(_trend, multi_year=_multi_yr),
+                use_container_width=True,
+            )
     with _tr2:
         st.markdown("**📉 Monthly GP & GP% Trend**")
-        st.altair_chart(
-            chart_gp_dual_axis(_trend),
-            use_container_width=True,
-        )
+        if not _blended_monthly.empty:
+            st.altair_chart(
+                chart_gp_trend_blended(_blended_monthly),
+                use_container_width=True,
+            )
+        else:
+            st.altair_chart(
+                chart_gp_dual_axis(_trend),
+                use_container_width=True,
+            )
 
     st.divider()
 
@@ -715,22 +795,32 @@ with main_tab3:
     st.subheader("🧩 Category Analysis")
     _cat_br = build_category_breakdown(dash_df)
     _cat_mo = build_monthly_category(dash_df)
-    _ca1, _ca2, _ca3 = st.columns(3)
-    with _ca1:
+    _cat_cols_count = 4 if not _fcst_cat_monthly.empty else 3
+    _cat_cols = st.columns(_cat_cols_count)
+    with _cat_cols[0]:
         st.markdown("**🍩 Revenue by Category**")
         st.altair_chart(
             chart_category_donut(_cat_br), use_container_width=True,
         )
-    with _ca2:
+    with _cat_cols[1]:
         st.markdown("**📊 Category Revenue Trend**")
         st.altair_chart(
             chart_category_stacked(_cat_mo), use_container_width=True,
         )
-    with _ca3:
+    with _cat_cols[2]:
         st.markdown("**🤖 AI_SW Monthly Revenue Trend**")
         st.altair_chart(
             chart_ai_sw_revenue_trend(_cat_mo), use_container_width=True,
         )
+    if not _fcst_cat_monthly.empty:
+        with _cat_cols[3]:
+            st.markdown("**📊 FCST Category Revenue**")
+            _fcst_cat_display = _fcst_cat_monthly.rename(
+                columns={"Cat": "Category", "Period": "Month"}
+            )
+            st.altair_chart(
+                chart_category_stacked(_fcst_cat_display), use_container_width=True,
+            )
 
     st.divider()
 
