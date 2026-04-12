@@ -77,6 +77,44 @@ def load_overrides():
     return {}
 
 
+# ── Name normalization ───────────────────────────────────────────
+def _normalize_name(name, upper=True):
+    """Remove punctuation, compress whitespace, unify case."""
+    if not isinstance(name, str):
+        return ""
+    # Remove punctuation
+    import string
+    name = name.translate(str.maketrans('', '', string.punctuation))
+    # Compress whitespace
+    name = re.sub(r'\s+', ' ', name.strip())
+    # Unify case
+    return name.upper() if upper else name.lower()
+
+
+def _load_aliases(kind):
+    """Load aliases from app/aliases.json."""
+    try:
+        with open(APP_DIR / "aliases.json", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get(kind, {})
+    except Exception:
+        return {}
+
+
+def normalize_customer_name(name):
+    """Normalize customer name with alias mapping."""
+    normalized = _normalize_name(name, upper=True)
+    aliases = _load_aliases("customer")
+    return aliases.get(normalized, normalized)
+
+
+def normalize_sales_person(name):
+    """Normalize sales person name with alias mapping."""
+    normalized = _normalize_name(name, upper=False)
+    aliases = _load_aliases("sales_person")
+    return aliases.get(normalized, normalized)
+
+
 # ── Data loading (cached) ────────────────────────────────────────
 def _rules_key():
     """Convert DES_RULES to a hashable tuple for cache busting."""
