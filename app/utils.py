@@ -15,10 +15,10 @@ REQUIRED_COLS = [
     "Part Number", "Category",
 ]
 SHIPPING_COLS = ["Currency", "UP", "TP(USD)"]
-VALID_CATEGORIES = {"Tablet", "CDR", "Tablet ACC", "CDR ACC", "AI_SW"}
+VALID_CATEGORIES = {"Tablet", "CDR", "Tablet ACC", "CDR ACC", "AI_SW", "Signify"}
 _VALID_CAT_MAP = {" ".join(c.upper().split()): c for c in VALID_CATEGORIES}
 GP_COL = "final GP(NTD,data from Financial Report)"
-CAT_ORDER = ["CDR", "CDR ACC", "Tablet", "Tablet ACC", "AI_SW", "Others"]
+CAT_ORDER = ["CDR", "CDR ACC", "Tablet", "Tablet ACC", "AI_SW", "Signify", "Others"]
 EXCLUDED_CUSTOMERS = {"MITAC COMPUTERKUNSHAN COLTD"}
 QTY_CATEGORIES = {"CDR", "Tablet"}
 DES_RULES = {
@@ -28,6 +28,7 @@ DES_RULES = {
     "Tablet ACC": ["tablet", "prometheus", "chiron", "hera", "phaeton", "surfing pro",
                    "cradle", "f840", "ulmo", "fleet cable"],
     "AI_SW":      ["visionmax"],
+    "Signify":    ["signify"],
 }
 
 APP_DIR = Path(__file__).resolve().parent
@@ -167,6 +168,14 @@ def load_single_file(file_path: str, rules_key):
     # ── Vectorized category classification ──
     ambiguous = []
     orig_cat = df["Category"].copy()
+
+    # Customer-name-based override (runs before Category/DES logic)
+    CUSTOMER_CATEGORY_MAP = {
+        "SIGNIFY": "Signify",
+    }
+    cust_upper = df["Customer Name"].str.strip().str.upper()
+    customer_cat = cust_upper.map(CUSTOMER_CATEGORY_MAP)
+
     cat_upper = df["Category"].str.upper().str.split().str.join(" ")
     df["Category"] = cat_upper.map(_VALID_CAT_MAP)
 
@@ -195,6 +204,9 @@ def load_single_file(file_path: str, rules_key):
             still_na = df.loc[needs_des, "Category"].isna()
             to_fill = still_na & matched
             df.loc[to_fill[to_fill].index, "Category"] = cat_name
+
+    # Apply customer-name override (takes priority over Category/DES results)
+    df.loc[customer_cat.notna(), "Category"] = customer_cat[customer_cat.notna()]
 
     df["Category"] = df["Category"].fillna("Others")
     for col in ["QTY", "SALES Total AMT", GP_COL]:

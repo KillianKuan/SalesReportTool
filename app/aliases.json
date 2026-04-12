@@ -1,4 +1,7 @@
 {
-  "customer": {},
+  "customer": {
+    "SIGNIFY NETHERLANDS B.V.": "Signify",
+    "SIGNIFY POLAND SP. Z O.O.": "Signify"
+  },
   "sales_person": {}
 }
