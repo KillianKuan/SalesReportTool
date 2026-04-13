@@ -22,28 +22,6 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 
-# ── Customer name mapping: FCST file → Performance Report canonical ──
-# Keys are the exact strings as they appear in the FCST Excel file.
-# Values are the normalized canonical names used in the Shipping Record.
-
-FCST_TO_CANONICAL: dict[str, str] = {
-    "AKAM":                      "AKAM Netherlands BV",
-    "All-Connects":              "All-Connects NV",
-    "Astrata SG":                "Astrata Group Pte Ltd",
-    "TTT/WFS/BMS(AZUGA)":        "AZUGA INC.",
-    "TTT/WFS/BMS(WFS)":          "Bridgestone Mobility Solutions B.V.",
-    "CalAmp":                    "CalAmp Wireless Networks Corporation",
-    "TeletracNavman-AU":         "Navman Wireless Australia Pty Ltd",
-    "TeletracNavman-NZ":         "Navman Wireless New Zealand",
-    "TeletracNavman-US  & MX":   "Teletrac Navman US Ltd.",
-    "Geotab (SmarterAI)":        "Geotab Inc.",
-    "Zonar-CDR":                 "Zonar System Inc.",
-    "Zonar-Tablet":              "Zonar System Inc.",
-    "Pedigree":                  "Pedigree Technologies LLC",
-    "Texim":                     "Texim Europe B.V.",
-    "Signify-EMS.21789.Signify Netherlands BV.Patek": "SIGNIFY NETHERLANDS BV",
-}
-
 # ── Configuration ─────────────────────────────────────────
 
 FCST_FOLDER = "FCST"
@@ -70,6 +48,8 @@ MONTH_INDEX = {m: i + 1 for i, m in enumerate(MONTHS)}
 
 # Module-level cache so aliases.json is only read once per process.
 _ALIASES_CACHE: Optional[dict] = None
+_FCST_CANONICAL_CACHE: Optional[dict] = None
+_unmatched_customers: set[tuple[str, str]] = set()
 
 
 def _load_fcst_customer_aliases() -> dict:
@@ -85,6 +65,19 @@ def _load_fcst_customer_aliases() -> dict:
     return _ALIASES_CACHE
 
 
+def _load_fcst_canonical_mapping() -> dict:
+    """Return the 'fcst_customer' section of app/aliases.json (cached)."""
+    global _FCST_CANONICAL_CACHE
+    if _FCST_CANONICAL_CACHE is None:
+        try:
+            path = Path(__file__).resolve().parent / "aliases.json"
+            with open(path, encoding="utf-8") as f:
+                _FCST_CANONICAL_CACHE = json.load(f).get("fcst_customer", {})
+        except Exception:
+            _FCST_CANONICAL_CACHE = {}
+    return _FCST_CANONICAL_CACHE
+
+
 def _normalize_fcst_name(name: str) -> str:
     """Strip punctuation, compress whitespace, uppercase — mirrors utils._normalize_name."""
     name = name.translate(str.maketrans("", "", string.punctuation))
@@ -96,34 +89,49 @@ def normalize_fcst_customer(fcst_name: str, sheet_name: str) -> str:
     """Map a raw FCST customer name to the Performance Report canonical name.
 
     Lookup order:
-      1. FCST_TO_CANONICAL  — exact match (strip only), then case-insensitive
-      2. aliases.json       — same normalization as utils.normalize_customer_name
-      3. Fallback           — ``"{sheet_name}_Others"``
+      1. aliases.json "fcst_customer" — exact match, then case-insensitive
+      2. aliases.json "customer"     — same normalization as utils.normalize_customer_name
+      3. Fallback                   — ``"{sheet_name}_Others"`` (collect unmatched)
     """
     name = str(fcst_name).strip()
 
-    # 1. FCST_TO_CANONICAL — exact
-    if name in FCST_TO_CANONICAL:
-        return FCST_TO_CANONICAL[name]
+    # 1. aliases.json "fcst_customer" — exact
+    fcst_canonical = _load_fcst_canonical_mapping()
+    if name in fcst_canonical:
+        return fcst_canonical[name]
     # 1b. case-insensitive fallback
     name_lower = name.lower()
-    for k, v in FCST_TO_CANONICAL.items():
+    for k, v in fcst_canonical.items():
         if k.lower() == name_lower:
             return v
 
-    # 2. aliases.json
+    # 2. aliases.json "customer"
     aliases = _load_fcst_customer_aliases()
     norm = _normalize_fcst_name(name)
     if norm in aliases:
         return aliases[norm]
 
-    # 3. Unknown → Others bucket keyed by sheet
+    # 3. Unknown → Others bucket keyed by sheet, collect unmatched
+    global _unmatched_customers
+    _unmatched_customers.add((name, sheet_name))
     print(f"[fcst_loader] No mapping for '{name}' (sheet={sheet_name}) "
           f"→ {sheet_name}_Others")
     return f"{sheet_name}_Others"
 
 
 # ── Public API ────────────────────────────────────────────
+
+def get_unmatched_customers() -> set[tuple[str, str]]:
+    """Return set of (customer_name, sheet_name) tuples that were unmatched during FCST loading."""
+    global _unmatched_customers
+    return _unmatched_customers.copy()
+
+
+def clear_unmatched_customers():
+    """Clear the unmatched customers set (call before each FCST load)."""
+    global _unmatched_customers
+    _unmatched_customers.clear()
+
 
 def find_latest_fcst_file(data_dir: str) -> Optional[str]:
     fcst_dir = os.path.join(data_dir, FCST_FOLDER)
@@ -140,6 +148,7 @@ def find_latest_fcst_file(data_dir: str) -> Optional[str]:
 
 
 def load_fcst(data_dir: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    clear_unmatched_customers()
     filepath = find_latest_fcst_file(data_dir)
     if filepath is None:
         return pd.DataFrame()
@@ -251,6 +260,32 @@ def agg_fcst_category_monthly(fcst_df: pd.DataFrame) -> pd.DataFrame:
         .agg(Revenue=("AMT_Forecast", "sum"))
         .reset_index()
     )
+    return agg.sort_values("MonthIndex").reset_index(drop=True)
+
+
+def agg_budget_monthly(fcst_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate FCST Budget data to company-level monthly totals.
+
+    Input: output of get_fcst_for_dashboard().
+    Output columns: Period, MonthIndex, Source, Revenue, GP, QTY, GP%.
+    Source is always "Budget" to match agg_blended_monthly() format.
+    """
+    if fcst_df.empty or "AMT_Budget" not in fcst_df.columns:
+        return pd.DataFrame()
+    agg = (
+        fcst_df
+        .groupby(["Period", "MonthIndex"], sort=False)
+        .agg(
+            Revenue=("AMT_Budget", "sum"),
+            GP=("GP_Budget", "sum"),
+            QTY=("QTY_Budget", "sum")
+        )
+        .reset_index()
+    )
+    agg["GP%"] = agg.apply(
+        lambda r: r["GP"] / r["Revenue"] * 100 if r["Revenue"] else 0.0, axis=1
+    )
+    agg["Source"] = "Budget"
     return agg.sort_values("MonthIndex").reset_index(drop=True)
 
 

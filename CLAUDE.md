@@ -52,15 +52,17 @@ DES_RULES（修改時需同步更新 app.py 頂部字典）：
 FCST 的 AMT / GP 是千元，`_parse_sheet()` 在建立 record 時自動 ×1,000。QTY 不轉換。
 
 ### Customer Name Mapping
-`FCST_TO_CANONICAL`（在 `fcst_loader.py` 頂部）：FCST 檔案名稱 → Performance Report 正規化名稱。
+`aliases.json` 的 "fcst_customer" section：FCST 檔案名稱 → Performance Report 正規化名稱。
 
 查找順序（`normalize_fcst_customer()`）：
-1. `FCST_TO_CANONICAL` 精確比對（先 exact，再 case-insensitive）
-2. `aliases.json` 的 customer section（與 Shipping Record 共用）
-3. Fallback → `"{sheet_name}_Others"`（例如 `Div.1&2_All_Others`）
+1. `aliases.json` "fcst_customer" 精確比對（先 exact，再 case-insensitive）
+2. `aliases.json` "customer" section（與 Shipping Record 共用）
+3. Fallback → `"{sheet_name}_Others"`（例如 `Div.1&2_All_Others`）+ 收集未匹配客戶
 
-新增客戶 mapping 時：只需在 `FCST_TO_CANONICAL` 加 entry，不需改其他地方。
+新增客戶 mapping 時：只需在 `aliases.json` 的 "fcst_customer" section 加 entry，不需改程式碼。
 多個 FCST 名稱可對應同一個正規化名稱（如 Zonar-CDR + Zonar-Tablet → Zonar System Inc.）。
+
+未匹配客戶會在 sidebar System Info 中顯示警告，提示更新 aliases.json。
 
 ### Sidebar 選項
 `All Sheets`（預設）/ `Div.1&2_All` / `VT` / `Signify`
@@ -100,7 +102,7 @@ v3.3（最新）— FCST 整合完成。
 ## 常見工作模式
 
 - 修改分類規則 → 編輯 `app.py` 內的 `DES_RULES`，並同步更新 Notion 對照表
-- 新增 FCST 客戶 mapping → 編輯 `fcst_loader.py` 的 `FCST_TO_CANONICAL`
+- 新增 FCST 客戶 mapping → 編輯 `aliases.json` 的 "fcst_customer" section
 - 新增 FCST Sheet → `FCST_SHEETS` 加 entry + app.py sidebar radio 加選項
 - 新功能開發 → `py -m streamlit run app/app.py`
 - 出貨給使用者 → 執行 `build.bat` 重新打包

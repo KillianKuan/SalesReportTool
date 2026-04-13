@@ -681,6 +681,7 @@ with main_tab3:
 
     _fcst_raw = pd.DataFrame()
     _blended_monthly = pd.DataFrame()
+    _budget_monthly = pd.DataFrame()
     _fcst_cat_monthly = pd.DataFrame()
 
     if _do_fcst:
@@ -701,9 +702,18 @@ with main_tab3:
                     _act_yr, _fcst_raw, _current_month
                 )
                 _blended_monthly = fcst_loader.agg_blended_monthly(_blended_raw)
+                _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
                 _fcst_cat_monthly = fcst_loader.agg_fcst_category_monthly(_fcst_raw)
         except Exception as _fcst_err:
             print(f"[FCST] Warning: failed to load/blend FCST data: {_fcst_err}")
+
+    # Collect unmatched FCST customers for warning
+    _unmatched_fcst = fcst_loader.get_unmatched_customers() if _do_fcst else set()
+    if _unmatched_fcst:
+        customer_list = [f"'{name}' (sheet: {sheet})" for name, sheet in sorted(_unmatched_fcst)]
+        st.warning(
+            f"⚠️ FCST 未匹配客戶 ({len(_unmatched_fcst)} 個): {', '.join(customer_list)}。請更新 aliases.json 的 fcst_customer section。"
+        )
 
     # ?? Section 1: KPI Metric Cards ??
     st.subheader("📌 Overview")
@@ -757,6 +767,31 @@ with main_tab3:
         _fk3.metric("📈 FY GP% Forecast", f"{_fy_gp_pct:.1f}%")
         _fk4.metric("📦 FY QTY Forecast", f"{_fy_qty:,.0f}")
 
+        # Budget Achievement metrics (2nd row)
+        try:
+            _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
+            if not _budget_monthly.empty:
+                _fy_budget_rev = _budget_monthly["Revenue"].sum()
+                _budget_achievement_pct = (
+                    _ytd_rev / _fy_budget_rev * 100 if _fy_budget_rev else 0.0
+                )
+                _bk1, _bk2 = st.columns(2)
+                _bk1.metric(
+                    "🎯 Budget Achievement%",
+                    f"{_budget_achievement_pct:.1f}%",
+                    delta=f"YTD vs FY Budget",
+                    delta_color="off",
+                )
+                _bk2.metric(
+                    "📊 FY Budget Revenue",
+                    f"{_fy_budget_rev:,.0f}",
+                    delta=f"Current: {_ytd_rev:,.0f}",
+                    delta_color="off",
+                )
+        except Exception as _budget_err:
+            print(f"[Dashboard] Warning: Failed to calculate Budget Achievement%: {_budget_err}")
+
+
     st.divider()
 
     # ?? Section 2: Monthly Trends ??
@@ -764,11 +799,20 @@ with main_tab3:
     _trend = build_monthly_trend(dash_df)
     _multi_yr = len(selected_years) > 1
     _tr1, _tr2 = st.columns(2)
+    
+    # Prepare blended data with budget (if available)
+    _chart_data_blended = _blended_monthly.copy() if not _blended_monthly.empty else pd.DataFrame()
+    if not _budget_monthly.empty and not _chart_data_blended.empty:
+        _chart_data_blended = pd.concat(
+            [_chart_data_blended, _budget_monthly],
+            ignore_index=True
+        )
+    
     with _tr1:
         st.markdown("**📈 Monthly Revenue Trend**")
-        if not _blended_monthly.empty:
+        if not _chart_data_blended.empty:
             st.altair_chart(
-                chart_revenue_trend_blended(_blended_monthly),
+                chart_revenue_trend_blended(_chart_data_blended),
                 use_container_width=True,
             )
         else:
@@ -778,9 +822,9 @@ with main_tab3:
             )
     with _tr2:
         st.markdown("**📉 Monthly GP & GP% Trend**")
-        if not _blended_monthly.empty:
+        if not _chart_data_blended.empty:
             st.altair_chart(
-                chart_gp_trend_blended(_blended_monthly),
+                chart_gp_trend_blended(_chart_data_blended),
                 use_container_width=True,
             )
         else:
@@ -898,6 +942,38 @@ with main_tab3:
     if _targets:
         _dk, _dm, _dcat = build_customer_detail(dash_df, _targets)
         if _dk:
+            # Prepare FCST data for selected customers
+            _blended_chart_df = pd.DataFrame()
+            _fy_forecast_revenue = 0
+            _fy_forecast_gp = 0
+            _fy_budget_revenue = 0
+            _budget_achievement_pct = 0
+            _fcst_filtered = pd.DataFrame()
+            if _do_fcst and not _fcst_raw.empty:
+                _fcst_filtered = _fcst_raw[_fcst_raw["Customer"].isin(_targets)].copy()
+                if not _fcst_filtered.empty:
+                    _actual_df = dash_df[dash_df["Customer Name"].isin(_targets)].rename(
+                        columns={"Customer Name": "Customer"}
+                    ).copy()
+                    _actual_df["Month"] = _actual_df["Ship Date"].dt.month
+                    _blended_df = fcst_loader.blend_actual_fcst(
+                        _actual_df, _fcst_filtered, _current_month
+                    )
+                    _blended_monthly = fcst_loader.agg_blended_monthly(_blended_df)
+                    _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_filtered)
+                    _blended_chart_df = pd.concat([_blended_monthly, _budget_monthly], ignore_index=True)
+                    # FY Forecast KPIs
+                    _fy_forecast_revenue = _blended_df[_blended_df["Source"] == "Forecast"]["AMT"].sum()
+                    _fy_forecast_gp = _blended_df[_blended_df["Source"] == "Forecast"]["GP"].sum()
+                    _fy_budget_revenue = _budget_monthly["Revenue"].sum() if not _budget_monthly.empty else 0
+                    # YTD Actual Revenue (up to current month)
+                    _ytd_actual_revenue = _actual_df[
+                        _actual_df["Ship Date"].dt.month <= _current_month
+                    ]["SALES Total AMT"].sum()
+                    _budget_achievement_pct = (
+                        _ytd_actual_revenue / _fy_budget_revenue * 100
+                    ) if _fy_budget_revenue else 0
+
             _label = (
                 ", ".join(_targets)
                 if len(_targets) <= 3
@@ -910,14 +986,30 @@ with main_tab3:
             _dkc3.metric("GP%", f"{_dk['gp_pct']:.1f}%")
             _dkc4.metric("QTY (CDR+Tablet)", f"{_dk['qty']:,.0f}")
 
+            # FY Forecast KPIs row
+            if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
+                st.markdown("**FY Forecast KPIs**")
+                _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
+                _fkc1.metric("FY Forecast Revenue", f"{_fy_forecast_revenue:,.0f}")
+                _fkc2.metric("FY Forecast GP", f"{_fy_forecast_gp:,.0f}")
+                _fkc3.metric("Budget Achievement%", f"{_budget_achievement_pct:.1f}%")
+                _fkc4.metric("FY Budget Revenue", f"{_fy_budget_revenue:,.0f}")
+
             if not _dm.empty and not _dcat.empty:
                 _ddc1, _ddc2 = st.columns(2)
                 with _ddc1:
-                    st.markdown("**📈 Monthly Revenue**")
-                    st.altair_chart(
-                        chart_customer_monthly(_dm),
-                        use_container_width=True,
-                    )
+                    if not _blended_chart_df.empty:
+                        st.markdown("**📈 Monthly Revenue (Actual + Forecast + Budget)**")
+                        st.altair_chart(
+                            chart_revenue_trend_blended(_blended_chart_df),
+                            use_container_width=True,
+                        )
+                    else:
+                        st.markdown("**📈 Monthly Revenue**")
+                        st.altair_chart(
+                            chart_customer_monthly(_dm),
+                            use_container_width=True,
+                        )
                 with _ddc2:
                     st.markdown("**🍩 Category Breakdown**")
                     st.altair_chart(

@@ -3,5 +3,22 @@
     "SIGNIFY NETHERLANDS B.V.": "Signify",
     "SIGNIFY POLAND SP. Z O.O.": "Signify"
   },
+  "fcst_customer": {
+    "AKAM": "AKAM Netherlands BV",
+    "All-Connects": "All-Connects NV",
+    "Astrata SG": "Astrata Group Pte Ltd",
+    "TTT/WFS/BMS(AZUGA)": "AZUGA INC.",
+    "TTT/WFS/BMS(WFS)": "Bridgestone Mobility Solutions B.V.",
+    "CalAmp": "CalAmp Wireless Networks Corporation",
+    "TeletracNavman-AU": "Navman Wireless Australia Pty Ltd",
+    "TeletracNavman-NZ": "Navman Wireless New Zealand",
+    "TeletracNavman-US  & MX": "Teletrac Navman US Ltd.",
+    "Geotab (SmarterAI)": "Geotab Inc.",
+    "Zonar-CDR": "Zonar System Inc.",
+    "Zonar-Tablet": "Zonar System Inc.",
+    "Pedigree": "Pedigree Technologies LLC",
+    "Texim": "Texim Europe B.V.",
+    "Signify-EMS.21789.Signify Netherlands BV.Patek": "SIGNIFY NETHERLANDS BV"
+  },
   "sales_person": {}
 }

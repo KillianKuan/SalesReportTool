@@ -113,7 +113,7 @@ Company Dashboard blends Shipping Record actuals with FCST file data:
 - **KPI Row:** Full-Year Forecast (Revenue, GP, GP%, QTY) shown below existing KPI cards
 - **Monthly Trend Charts:** Actual = solid blue line, Forecast = dashed green line, with a boundary marker
 - **Category Chart:** 4th column shows FCST category revenue breakdown
-- **Customer Mapping:** `FCST_TO_CANONICAL` dict maps FCST file names to Performance Report canonical names; unmatched customers are bucketed as `{sheet}_Others`
+- **Customer Mapping:** `aliases.json` "fcst_customer" section maps FCST file names to Performance Report canonical names; unmatched customers are bucketed as `{sheet}_Others` and shown as warnings
 - **Unit Handling:** FCST AMT/GP values are in thousands (千元) and are automatically scaled ×1,000 to match Shipping Record units
 
 ---
@@ -172,7 +172,7 @@ apply_overrides()
         fcst_loader.get_fcst_for_dashboard()
             ├─ find_latest_fcst_file()
             ├─ _parse_sheet() × N sheets
-            │   ├─ normalize_fcst_customer()  ← FCST_TO_CANONICAL + aliases.json
+            │   ├─ normalize_fcst_customer()  ← aliases.json fcst_customer + customer sections
             │   └─ AMT/GP ×1000 scaling
             └─ pivot_table (long → wide)
             ↓
@@ -308,15 +308,17 @@ Create or edit [app/aliases.json](app/aliases.json):
 
 ### 3. FCST Customer Mapping
 
-Edit `FCST_TO_CANONICAL` in [app/fcst_loader.py](app/fcst_loader.py):
+Edit `aliases.json` "fcst_customer" section:
 
-```python
-FCST_TO_CANONICAL: dict[str, str] = {
-    "AKAM":                   "AKAM Netherlands BV",
-    "TTT/WFS/BMS(WFS)":       "Bridgestone Mobility Solutions B.V.",
-    "Zonar-CDR":              "Zonar System Inc.",
-    "Zonar-Tablet":           "Zonar System Inc.",
-    # ... add more as needed
+```json
+{
+  "fcst_customer": {
+    "AKAM": "AKAM Netherlands BV",
+    "TTT/WFS/BMS(WFS)": "Bridgestone Mobility Solutions B.V.",
+    "Zonar-CDR": "Zonar System Inc.",
+    "Zonar-Tablet": "Zonar System Inc.",
+    // ... add more as needed
+  }
 }
 ```
 
@@ -324,8 +326,8 @@ FCST_TO_CANONICAL: dict[str, str] = {
 - Keys are exact strings as they appear in the FCST Excel file
 - Values are the canonical names used in the Shipping Record
 - Multiple FCST keys can map to one canonical name (e.g., Zonar-CDR + Zonar-Tablet → Zonar System Inc.)
-- Unmatched FCST customers are automatically bucketed as `"{sheet_name}_Others"` (e.g., `Div.1&2_All_Others`)
-- `aliases.json` is checked as a secondary fallback before the Others bucket
+- Unmatched FCST customers are automatically bucketed as `"{sheet_name}_Others"` (e.g., `Div.1&2_All_Others`) and shown as warnings
+- `aliases.json` "customer" section is checked as a secondary fallback before the Others bucket
 
 ### 4. Category Overrides
 
@@ -525,8 +527,9 @@ SalesReportTool.exe
   - FCST category revenue chart added as 4th column in Category Analysis section
   - FCST Sheet sidebar selector: `All Sheets` / `Div.1&2_All` / `VT` / `Signify`
 - 🗺️ **FCST Customer Name Mapping**
-  - `FCST_TO_CANONICAL` dict (15 entries) maps FCST names → Performance Report canonical names
-  - Three-stage lookup: `FCST_TO_CANONICAL` → `aliases.json` → `{sheet}_Others` bucket
+  - `aliases.json` "fcst_customer" section (15 entries) maps FCST names → Performance Report canonical names
+  - Three-stage lookup: `aliases.json` fcst_customer → customer section → `{sheet}_Others` bucket
+  - Unmatched customers trigger warnings in the sidebar
   - AMT/GP auto-scaled ×1,000 (FCST stores values in thousands)
 
 ### v3.2 (April 2026)
@@ -559,7 +562,7 @@ SalesReportTool.exe
 
 **FCST Customer Mapping:**
 - FCST file uses short/internal names that differ from Shipping Record customer names
-- `FCST_TO_CANONICAL` is maintained in `fcst_loader.py` as the single source of truth
+- `aliases.json` "fcst_customer" section is maintained as the single source of truth for FCST customer mappings
 - Unmatched customers land in `{sheet}_Others` buckets rather than being silently dropped
 - Two FCST names can map to one canonical name (e.g., Zonar-CDR + Zonar-Tablet → Zonar System Inc.); the pivot's `aggfunc="sum"` handles the merge automatically
 

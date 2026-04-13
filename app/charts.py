@@ -291,22 +291,22 @@ def chart_customer_cat_donut(cat_df):
     )
 
 
-# ── Blended Actual + Forecast charts ─────────────────────────────
+# ── Blended Actual + Forecast + Budget charts ────────────────
 
 _SOURCE_COLOR = alt.Scale(
-    domain=["Actual", "Forecast"],
-    range=["#5470c6", "#91cc75"],
+    domain=["Actual", "Forecast", "Budget"],
+    range=["#5470c6", "#91cc75", "#999999"],
 )
 _SOURCE_DASH = alt.Scale(
-    domain=["Actual", "Forecast"],
-    range=[[1, 0], [6, 3]],
+    domain=["Actual", "Forecast", "Budget"],
+    range=[[1, 0], [6, 3], [4, 4]],
 )
 
 
 def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
-    """Monthly revenue line: Actual = solid blue, Forecast = dashed green.
+    """Monthly revenue line: Actual = solid blue, Forecast = dashed green, Budget = dashed gray.
 
-    Input: output of fcst_loader.agg_blended_monthly().
+    Input: output of fcst_loader.agg_blended_monthly() or concat with agg_budget_monthly().
     Columns required: Period, MonthIndex, Source, Revenue.
     """
     df = blended_monthly_df.copy()
@@ -343,9 +343,9 @@ def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerCh
 
 
 def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
-    """GP bar + GP% line dual-axis chart with Actual/Forecast color coding.
+    """GP bar + GP% line dual-axis chart with Actual/Forecast/Budget color coding.
 
-    Input: output of fcst_loader.agg_blended_monthly().
+    Input: output of fcst_loader.agg_blended_monthly() or concat with agg_budget_monthly().
     Columns required: Period, MonthIndex, Source, GP, GP%.
     """
     df = blended_monthly_df.copy()
