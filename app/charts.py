@@ -93,6 +93,7 @@ CAT_COLORS = {
     "Tablet":     "#ff7f0e",
     "Tablet ACC": "#ffbb78",
     "AI_SW":      "#2ca02c",
+    "Signify":    "#9467bd",
     "Others":     "#d62728",
 }
 

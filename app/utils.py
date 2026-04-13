@@ -174,6 +174,8 @@ def load_single_file(file_path: str, rules_key):
         "SIGNIFY": "Signify",
     }
     cust_upper = df["Customer Name"].str.strip().str.upper()
+    customer_aliases = _load_aliases("customer")
+    cust_upper = cust_upper.map(customer_aliases).fillna(cust_upper)
     customer_cat = cust_upper.map(CUSTOMER_CATEGORY_MAP)
 
     cat_upper = df["Category"].str.upper().str.split().str.join(" ")
