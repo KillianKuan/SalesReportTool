@@ -743,15 +743,6 @@ with main_tab3:
         _k4.metric("📦 Units Sold", f"{_kpis_all['qty']:,.0f}",
                    delta=_fmt_delta(_kpis_yoy["qty_yoy"]))
         _k4.caption("CDR + Tablet only")
-        _k5, _k6 = st.columns(2)
-        _k5.metric(
-            "👥 Customers", f"{_kpis_all['customers']:,}",
-            delta=(
-                f"{_kpis_yoy['customers_yoy']:+,}"
-                if _kpis_yoy["customers_yoy"] is not None else "N/A"
-            ),
-        )
-        _k6.metric("🗂️ Categories", f"{_kpis_all['active_cats']}")
 
     # Full-Year Forecast row (only shown when current year is selected and FCST loaded)
     if not _blended_monthly.empty:
@@ -986,8 +977,8 @@ with main_tab3:
                     _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_filtered)
                     _blended_chart_df = pd.concat([_blended_monthly, _budget_monthly], ignore_index=True)
                     # FY Forecast KPIs
-                    _fy_forecast_revenue = _blended_df[_blended_df["Source"] == "Forecast"]["AMT"].sum()
-                    _fy_forecast_gp = _blended_df[_blended_df["Source"] == "Forecast"]["GP"].sum()
+                    _fy_forecast_revenue = _blended_df["AMT"].sum()
+                    _fy_forecast_gp = _blended_df["GP"].sum()
                     _fy_budget_revenue = _budget_monthly["Revenue"].sum() if not _budget_monthly.empty else 0
                     # YTD Actual Revenue (up to current month)
                     _ytd_actual_revenue = _actual_df[

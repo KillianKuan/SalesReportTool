@@ -98,18 +98,18 @@ def normalize_fcst_customer(fcst_name: str, sheet_name: str) -> str:
     # 1. aliases.json "fcst_customer" — exact
     fcst_canonical = _load_fcst_canonical_mapping()
     if name in fcst_canonical:
-        return fcst_canonical[name]
+        return _normalize_fcst_name(fcst_canonical[name])
     # 1b. case-insensitive fallback
     name_lower = name.lower()
     for k, v in fcst_canonical.items():
         if k.lower() == name_lower:
-            return v
+            return _normalize_fcst_name(v)
 
     # 2. aliases.json "customer"
     aliases = _load_fcst_customer_aliases()
     norm = _normalize_fcst_name(name)
     if norm in aliases:
-        return aliases[norm]
+        return _normalize_fcst_name(aliases[norm])
 
     # 3. Unknown → Others bucket keyed by sheet, collect unmatched
     global _unmatched_customers

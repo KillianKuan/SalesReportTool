@@ -376,12 +376,9 @@ def calc_dashboard_kpis(df, prev_df=None):
     gp = df[GP_COL].sum()
     gp_pct = gp / revenue * 100 if revenue else 0.0
     qty = df[df["Category"].isin(QTY_CATEGORIES)]["QTY"].sum()
-    customers = df["Customer Name"].nunique()
-    active_cats = df["Category"].nunique()
 
     result = {
-        "revenue": revenue, "gp": gp, "gp_pct": gp_pct,
-        "qty": qty, "customers": customers, "active_cats": active_cats,
+        "revenue": revenue, "gp": gp, "gp_pct": gp_pct, "qty": qty,
     }
 
     if prev_df is not None and not prev_df.empty:
@@ -389,15 +386,13 @@ def calc_dashboard_kpis(df, prev_df=None):
         p_gp = prev_df[GP_COL].sum()
         p_gp_pct = p_gp / p_rev * 100 if p_rev else 0.0
         p_qty = prev_df[prev_df["Category"].isin(QTY_CATEGORIES)]["QTY"].sum()
-        p_cust = prev_df["Customer Name"].nunique()
 
         result["revenue_yoy"] = (revenue - p_rev) / p_rev * 100 if p_rev else None
         result["gp_yoy"] = (gp - p_gp) / p_gp * 100 if p_gp else None
         result["gp_pct_yoy"] = gp_pct - p_gp_pct  # ppt change
         result["qty_yoy"] = (qty - p_qty) / p_qty * 100 if p_qty else None
-        result["customers_yoy"] = customers - p_cust
     else:
-        for k in ("revenue_yoy", "gp_yoy", "gp_pct_yoy", "qty_yoy", "customers_yoy"):
+        for k in ("revenue_yoy", "gp_yoy", "gp_pct_yoy", "qty_yoy"):
             result[k] = None
 
     return result
