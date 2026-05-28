@@ -1,6 +1,35 @@
 
 ---
 
+## 資料夾結構
+
+```
+data/
+├── Over the Years/
+│   └── historical.csv      # 所有歷史年份合併（UTF-8-BOM）
+├── Current Year/
+│   └── *.xlsx              # 當年度出貨記錄（Actual sheet）
+└── FCST/
+    └── *.xlsx              # 最新 FCST 檔（依 mtime 自動選擇）
+```
+
+### 初次遷移
+執行 `python scripts/merge_historical.py` 將舊版 `data/{year}/` 年份資料夾合併為 `historical.csv`，
+再將當年度 xlsx 移至 `data/Current Year/`。
+
+### 讀取邏輯（`utils.py`）
+| 常數 | 路徑 |
+|------|------|
+| `HISTORICAL_CSV` | `data/Over the Years/historical.csv` |
+| `CURRENT_YEAR_DIR` | `data/Current Year/` |
+| `HISTORICAL_DIR` | `data/Over the Years/` |
+
+- `load_historical_csv(file_path, rules_key)` — 讀 CSV，套用與 `load_single_file` 相同清洗流程
+- `scan_current_year_folder()` — 回傳 `Current Year/` 內最新 xlsx，或 `None`
+- 年份選擇器從合併後的 df 的 `Ship Date` 年份自動推導（不再依賴資料夾名稱）
+
+---
+
 ## 輸入資料規格
 
 必要欄位（欄名完全一致）：
@@ -112,7 +141,9 @@ Dashboard 行為：
 
 ## 目前版本
 
-v3.5（最新）— Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
+v3.6（最新）— 資料夾結構重構（Over the Years / Current Year）。
+
+v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 
 ### 核心模組
 | 檔案 | 職責 |
@@ -126,9 +157,11 @@ v3.5（最新）— Budget 整合 + Customer Drill-Down FCST + Signify 獨立分
 
 ## 常見工作模式
 
-- 修改分類規則 → 編輯 `app.py` 內的 `DES_RULES`，並同步更新 Notion 對照表
+- 修改分類規則 → 編輯 `utils.py` 內的 `DES_RULES`，並同步更新 Notion 對照表
 - 新增 FCST 客戶 mapping → 編輯 `aliases.json` 的 "fcst_customer" section
 - 新增 FCST Sheet → `FCST_SHEETS` 加 entry + app.py sidebar radio 加選項
 - 新功能開發 → `py -m streamlit run app/app.py`
 - 出貨給使用者 → 執行 `build.bat` 重新打包
 - 小修正（只改 app 層檔案）→ 直接替換 `dist/SalesReportTool/app/` 下的對應檔案
+- 年度結算（新年開始）→ 執行 `python scripts/merge_historical.py` 將舊當年度合併入 `historical.csv`，
+  再將新年度 xlsx 放入 `data/Current Year/`
