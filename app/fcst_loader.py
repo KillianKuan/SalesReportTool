@@ -293,18 +293,15 @@ def agg_budget_monthly(fcst_df: pd.DataFrame) -> pd.DataFrame:
 # ── Internal helpers ──────────────────────────────────────
 
 def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
-    # Read header rows (Row 1~3, 0-indexed 0~2)
-    header_df = pd.read_excel(
-        filepath, sheet_name=sheet_name,
-        header=None, nrows=DATA_START_ROW, dtype=str,
-    )
-    # Read data rows (from Excel Row 4 onward)
-    data_df = pd.read_excel(
-        filepath, sheet_name=sheet_name,
-        header=None, skiprows=DATA_START_ROW,
-    )
+    # Read entire sheet once, then split into header / data regions
+    raw = pd.read_excel(filepath, sheet_name=sheet_name, header=None, engine="calamine")
+    header_df = raw.iloc[:DATA_START_ROW]
+    data_df = raw.iloc[DATA_START_ROW:].reset_index(drop=True)
     if data_df.empty:
         return pd.DataFrame()
+    # Coerce data columns (J onward) to numeric; left columns may stay mixed-type
+    data_cols = data_df.columns[LEFT_COLS_COUNT:]
+    data_df[data_cols] = data_df[data_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
     exchange_rate = _extract_exchange_rate(header_df)
     num_data_cols = data_df.shape[1] - LEFT_COLS_COUNT
     if num_data_cols <= 0:
