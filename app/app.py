@@ -1,4 +1,4 @@
-﻿"""app.py - Performance Report Analysis Tool (v7.2)."""
+"""app.py - Performance Report Analysis Tool (v7.3)."""
 
 import io
 import os
@@ -87,7 +87,7 @@ def inject_heartbeat() -> None:
 
 inject_heartbeat()
 
-# ?? 0. Load data sources (cached) ???????????????????????????????????????????
+# ── 0. Load data sources (cached) ────────────────────────────────────────────
 current_year = datetime.now().year
 
 _cur_xlsx = scan_current_year_folder()
@@ -127,7 +127,7 @@ _combined_df = _combined_df[~_combined_df["Customer Name"].isin(EXCLUDED_CUSTOME
 total_nat = (_hist_nat or 0) + (_cur_nat or 0)
 all_ambiguous = list(_hist_amb or []) + list(_cur_amb or [])
 
-# ?? 1. Year selection (sidebar) ??????????????????????????????????
+# ── 1. Data availability globals ─────────────────────────────────────────────
 available_years = sorted(
     _combined_df["Ship Date"].dt.year.dropna().astype(int).unique().tolist(),
     reverse=True,
@@ -138,53 +138,17 @@ if not available_years:
 
 default_years = [current_year] if current_year in available_years else [available_years[0]]
 
-st.sidebar.header("📅 Year Selection")
-selected_years = st.sidebar.multiselect(
-    "Select years to analyze",
-    options=available_years,
-    default=default_years,
-    format_func=str,
-)
+has_des = "DES" in _combined_df.columns
+has_shipping = all(c in _combined_df.columns for c in SHIPPING_COLS)
 
-if not selected_years:
-    st.info("Please select at least one year from the sidebar.")
-    st.stop()
-
-df = _combined_df[_combined_df["Ship Date"].dt.year.isin(selected_years)].copy()
-
-if df.empty:
-    st.error("No data for the selected year(s).")
-    st.stop()
-
-has_des = "DES" in df.columns
-has_shipping = all(c in df.columns for c in SHIPPING_COLS)
-
-# ?? Overrides ????????????????????????????????????????????????????
+# ── Overrides (init only; applied per-tab) ────────────────────────────────────
 if "others_overrides" not in st.session_state:
     st.session_state["others_overrides"] = load_overrides()
 
-if st.session_state["others_overrides"]:
-    df = df.copy()
-    for (cust, pn, month, des), new_cat in st.session_state["others_overrides"].items():
-        if "DES" in df.columns:
-            mask = (
-                (df["Customer Name"] == cust)
-                & (df["Part Number"] == pn)
-                & (df["Month"] == month)
-                & (df["DES"] == des)
-            )
-        else:
-            mask = (
-                (df["Customer Name"] == cust)
-                & (df["Part Number"] == pn)
-                & (df["Month"] == month)
-            )
-        df.loc[mask, "Category"] = new_cat
-
-# ?? Sales Person filter (sidebar) ????????????????????????????????
+# ── Sales Person filter (sidebar) ─────────────────────────────────────────────
 _sp_visible_custs: set[str] = set()
-if "SALE_Person" in df.columns:
-    _sp_year_rows = df[df["Ship Date"].dt.year == current_year]
+if "SALE_Person" in _combined_df.columns:
+    _sp_year_rows = _combined_df[_combined_df["Ship Date"].dt.year == current_year]
     _sp_names = sorted(
         sp for sp in _sp_year_rows["SALE_Person"].dropna().unique()
         if sp not in ("nan", "NaN", "")
@@ -209,7 +173,7 @@ if "SALE_Person" in df.columns:
                     st.session_state.setdefault(f"sp_cust__{c}", False)
                     st.sidebar.checkbox(c, key=f"sp_cust__{c}")
 
-# ?? Sidebar: System Info ???????????????????????????????????????
+# ── Sidebar: FCST ─────────────────────────────────────────────────────────────
 st.sidebar.header("📈 FCST")
 _fcst_sheet = st.sidebar.radio(
     "FCST Sheet",
@@ -219,7 +183,7 @@ _fcst_sheet = st.sidebar.radio(
 )
 
 with st.sidebar.expander("ℹ️ System Info", expanded=False):
-    st.markdown(f"**Loaded {len(df):,} rows** across {len(selected_years)} year(s)")
+    st.markdown(f"**Loaded {len(_combined_df):,} rows** across {len(available_years)} year(s)")
     if HISTORICAL_CSV.exists() and _hist_df is not None:
         _hmtime = datetime.fromtimestamp(HISTORICAL_CSV.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         _hyears = sorted(_hist_df["Ship Date"].dt.year.dropna().astype(int).unique().tolist())
@@ -241,7 +205,7 @@ with st.sidebar.expander("ℹ️ System Info", expanded=False):
             "'Currency'/'UP'/'TP(USD)' columns not found; "
             "Shipping Record Search disabled."
         )
-    if "SALE_Person" not in df.columns:
+    if "SALE_Person" not in _combined_df.columns:
         st.warning("'SALE_Person' column not found; Sales Person filter disabled.")
     if total_nat:
         st.warning(f"{total_nat} row(s) with invalid Ship Date skipped.")
@@ -253,188 +217,236 @@ with st.sidebar.expander("ℹ️ System Info", expanded=False):
         st.dataframe(pd.DataFrame(all_ambiguous), use_container_width=True)
 
 
-# ?? YoY comparison data (for Dashboard) ??????????????????????????
-yoy_df = None
-_max_sel_year = max(selected_years)
-_yoy_year = _max_sel_year - 1
-_yoy_data = _combined_df[_combined_df["Ship Date"].dt.year == _yoy_year]
-if not _yoy_data.empty:
-    yoy_df = _yoy_data.copy()
-
-# ??????????????????????????????????????????????????????????????
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN TABS
-# ??????????????????????????????????????????????????????????????
+# ══════════════════════════════════════════════════════════════════════════════
 main_tab1, main_tab2, main_tab3 = st.tabs(
     ["📄 Performance Report", "🚚 Shipping Record Search", "📊 Company Dashboard"]
 )
 
-# ?? TAB 1: Performance Report ????????????????????????????????????
+# ── TAB 1: Performance Report ─────────────────────────────────────────────────
 with main_tab1:
-    st.subheader("🔎 Customer Name")
-    cust_query = st.text_input("Enter keyword (substring, case-insensitive)")
-    all_customers = sorted(df["Customer Name"].dropna().unique())
-    if cust_query.strip():
-        matched = [c for c in all_customers if cust_query.strip().lower() in c.lower()]
-        if not matched:
-            st.warning("No matching customers found.")
-        else:
-            st.markdown(f"**Found {len(matched)} customer(s):**")
-            for c in matched:
-                st.session_state.setdefault(f"cust__{c}", False)
-                st.checkbox(c, key=f"cust__{c}")
-
-    selected_keyword = [
-        c for c in all_customers if st.session_state.get(f"cust__{c}", False)
-    ]
-    selected_sp = [
-        c for c in all_customers
-        if c in _sp_visible_custs and st.session_state.get(f"sp_cust__{c}", False)
-    ]
-    selected = sorted(set(selected_keyword + selected_sp))
-    if selected:
-        st.markdown(
-            "**Selected ({}):** {}".format(
-                len(selected), "\u3000".join(f"`{c}`" for c in selected)
-            )
-        )
-        if st.button("🧹 Clear all selections"):
-            for c in all_customers:
-                st.session_state.pop(f"cust__{c}", None)
-                st.session_state.pop(f"sp_cust__{c}", None)
-            st.rerun()
-
+    _yr_perf = st.multiselect(
+        "📅 Select years to analyze",
+        options=available_years,
+        default=default_years,
+        key="year_perf",
+    )
     st.divider()
 
-    qty_only = st.checkbox("QTY: sum only Tablet & CDR (exclude ACC)", value=True)
-    by_cat = st.checkbox("Split report by Category", value=True)
-    merge_cdr = merge_tab = False
-    if by_cat:
-        merge_cdr = st.checkbox("  ↪ Merge CDR ACC into CDR", value=True)
-        merge_tab = st.checkbox("  ↪ Merge Tablet ACC into Tablet", value=True)
+    df = (
+        _combined_df[_combined_df["Ship Date"].dt.year.isin(_yr_perf)].copy()
+        if _yr_perf else pd.DataFrame()
+    )
 
-    _opts = (qty_only, by_cat, merge_cdr, merge_tab, tuple(sorted(selected)))
+    if df.empty:
+        st.info(
+            "Please select at least one year."
+            if not _yr_perf else "No data for the selected year(s)."
+        )
+    else:
+        # Apply overrides to this tab's filtered data
+        if st.session_state["others_overrides"]:
+            df = df.copy()
+            for (cust, pn, month, des), new_cat in st.session_state["others_overrides"].items():
+                if "DES" in df.columns:
+                    mask = (
+                        (df["Customer Name"] == cust)
+                        & (df["Part Number"] == pn)
+                        & (df["Month"] == month)
+                        & (df["DES"] == des)
+                    )
+                else:
+                    mask = (
+                        (df["Customer Name"] == cust)
+                        & (df["Part Number"] == pn)
+                        & (df["Month"] == month)
+                    )
+                df.loc[mask, "Category"] = new_cat
 
-    if st.button("▶ Run"):
-        if not selected:
-            st.warning("Please select at least one customer.")
-        else:
-            base = df[df["Customer Name"].isin(selected)].copy()
-            if base.empty:
-                st.warning("No data for selected customer(s).")
+        st.subheader("🔎 Customer Name")
+        cust_query = st.text_input("Enter keyword (substring, case-insensitive)")
+        all_customers = sorted(df["Customer Name"].dropna().unique())
+        if cust_query.strip():
+            matched = [c for c in all_customers if cust_query.strip().lower() in c.lower()]
+            if not matched:
+                st.warning("No matching customers found.")
             else:
-                with st.spinner("Generating report..."):
-                    wide_summary = to_wide_summary(build_summary(base, qty_only))
-                    long_bycat = (
-                        build_bycat(base, qty_only, merge_cdr, merge_tab)
-                        if by_cat else pd.DataFrame()
-                    )
-                    others_df = base[base["Category"] == "Others"].copy()
+                st.markdown(f"**Found {len(matched)} customer(s):**")
+                for c in matched:
+                    st.session_state.setdefault(f"cust__{c}", False)
+                    st.checkbox(c, key=f"cust__{c}")
 
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                        wide_summary.to_excel(w, sheet_name="Summary", index=False)
-                        if not long_bycat.empty:
-                            all_months = sorted(long_bycat["Month"].unique().tolist())
-                            frames = []
-                            for cat in sorted_cats(long_bycat):
-                                wc = to_wide_one_cat(long_bycat, cat, all_months)
-                                wc.insert(0, "Category", cat)
-                                frames.append(wc)
-                            pd.concat(frames, ignore_index=True).to_excel(
-                                w, sheet_name="ByCategory", index=False
+        selected_keyword = [
+            c for c in all_customers if st.session_state.get(f"cust__{c}", False)
+        ]
+        selected_sp = [
+            c for c in all_customers
+            if c in _sp_visible_custs and st.session_state.get(f"sp_cust__{c}", False)
+        ]
+        selected = sorted(set(selected_keyword + selected_sp))
+        if selected:
+            st.markdown(
+                "**Selected ({}):** {}".format(
+                    len(selected), "　".join(f"`{c}`" for c in selected)
+                )
+            )
+            if st.button("🧹 Clear all selections"):
+                for c in all_customers:
+                    st.session_state.pop(f"cust__{c}", None)
+                    st.session_state.pop(f"sp_cust__{c}", None)
+                st.rerun()
+
+        st.divider()
+
+        qty_only = st.checkbox("QTY: sum only Tablet & CDR (exclude ACC)", value=True)
+        by_cat = st.checkbox("Split report by Category", value=True)
+        merge_cdr = merge_tab = False
+        if by_cat:
+            merge_cdr = st.checkbox("  ↪ Merge CDR ACC into CDR", value=True)
+            merge_tab = st.checkbox("  ↪ Merge Tablet ACC into Tablet", value=True)
+
+        _opts = (qty_only, by_cat, merge_cdr, merge_tab, tuple(sorted(selected)))
+
+        if st.button("▶ Run"):
+            if not selected:
+                st.warning("Please select at least one customer.")
+            else:
+                base = df[df["Customer Name"].isin(selected)].copy()
+                if base.empty:
+                    st.warning("No data for selected customer(s).")
+                else:
+                    with st.spinner("Generating report..."):
+                        wide_summary = to_wide_summary(build_summary(base, qty_only))
+                        long_bycat = (
+                            build_bycat(base, qty_only, merge_cdr, merge_tab)
+                            if by_cat else pd.DataFrame()
+                        )
+                        others_df = base[base["Category"] == "Others"].copy()
+
+                        buf = io.BytesIO()
+                        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                            wide_summary.to_excel(w, sheet_name="Summary", index=False)
+                            if not long_bycat.empty:
+                                all_months = sorted(long_bycat["Month"].unique().tolist())
+                                frames = []
+                                for cat in sorted_cats(long_bycat):
+                                    wc = to_wide_one_cat(long_bycat, cat, all_months)
+                                    wc.insert(0, "Category", cat)
+                                    frames.append(wc)
+                                pd.concat(frames, ignore_index=True).to_excel(
+                                    w, sheet_name="ByCategory", index=False
+                                )
+                        buf.seek(0)
+
+                    st.session_state["rpt_summary"] = wide_summary
+                    st.session_state["rpt_long_bycat"] = long_bycat
+                    st.session_state["rpt_others"] = others_df
+                    st.session_state["rpt_buf"] = buf.getvalue()
+                    st.session_state["rpt_has_des"] = has_des
+                    st.session_state["rpt_opts"] = _opts
+
+        if "rpt_summary" in st.session_state:
+            if st.session_state.get("rpt_opts") != _opts:
+                st.info("Options have changed; press **▶ Run** to refresh the report.")
+            _report_customers = list(st.session_state["rpt_opts"][4])
+            st.markdown(
+                "**Customer(s):** "
+                + "　".join(f"`{c}`" for c in _report_customers)
+            )
+
+            _summary = st.session_state["rpt_summary"]
+            _long_bycat = st.session_state["rpt_long_bycat"]
+            _others = st.session_state["rpt_others"]
+            _buf = st.session_state["rpt_buf"]
+            _has_des = st.session_state["rpt_has_des"]
+
+            tab_labels = ["📋 Summary"]
+            if not _long_bycat.empty:
+                tab_labels.append("🗂️ By Category")
+            tabs = st.tabs(tab_labels)
+
+            with tabs[0]:
+                st.dataframe(fmt(_summary), use_container_width=True)
+
+            if not _long_bycat.empty:
+                with tabs[1]:
+                    show_bycat(_long_bycat)
+
+            if not _others.empty:
+                _override_opts = ["Others (keep)"] + [
+                    c for c in CAT_ORDER if c != "Others"
+                ]
+                with st.expander(
+                    f"⚠️ Others ({len(_others)} row(s)) - review & reassign category"
+                ):
+                    for _i, _row in _others.iterrows():
+                        _c1, _c2 = st.columns([4, 1])
+                        with _c1:
+                            _des_str = f" | DES: {_row['DES']}" if _has_des else ""
+                            st.markdown(
+                                f"`{_row['Part Number']}`{_des_str}&nbsp;&nbsp;"
+                                f"Month: **{_row['Month']}** | "
+                                f"AMT: {int(_row['SALES Total AMT']):,}"
                             )
-                    buf.seek(0)
-
-                st.session_state["rpt_summary"] = wide_summary
-                st.session_state["rpt_long_bycat"] = long_bycat
-                st.session_state["rpt_others"] = others_df
-                st.session_state["rpt_buf"] = buf.getvalue()
-                st.session_state["rpt_has_des"] = has_des
-                st.session_state["rpt_opts"] = _opts
-
-    if "rpt_summary" in st.session_state:
-        if st.session_state.get("rpt_opts") != _opts:
-            st.info("Options have changed; press **▶ Run** to refresh the report.")
-        _report_customers = list(st.session_state["rpt_opts"][4])
-        st.markdown(
-            "**Customer(s):** "
-            + "\u3000".join(f"`{c}`" for c in _report_customers)
-        )
-
-        _summary = st.session_state["rpt_summary"]
-        _long_bycat = st.session_state["rpt_long_bycat"]
-        _others = st.session_state["rpt_others"]
-        _buf = st.session_state["rpt_buf"]
-        _has_des = st.session_state["rpt_has_des"]
-
-        tab_labels = ["📋 Summary"]
-        if not _long_bycat.empty:
-            tab_labels.append("🗂️ By Category")
-        tabs = st.tabs(tab_labels)
-
-        with tabs[0]:
-            st.dataframe(fmt(_summary), use_container_width=True)
-
-        if not _long_bycat.empty:
-            with tabs[1]:
-                show_bycat(_long_bycat)
-
-        if not _others.empty:
-            _override_opts = ["Others (keep)"] + [
-                c for c in CAT_ORDER if c != "Others"
-            ]
-            with st.expander(
-                f"⚠️ Others ({len(_others)} row(s)) - review & reassign category"
-            ):
-                for _i, _row in _others.iterrows():
-                    _c1, _c2 = st.columns([4, 1])
-                    with _c1:
-                        _des_str = f" | DES: {_row['DES']}" if _has_des else ""
-                        st.markdown(
-                            f"`{_row['Part Number']}`{_des_str}&nbsp;&nbsp;"
-                            f"Month: **{_row['Month']}** | "
-                            f"AMT: {int(_row['SALES Total AMT']):,}"
+                        with _c2:
+                            _ok = (
+                                _row["Customer Name"],
+                                _row["Part Number"],
+                                _row["Month"],
+                                _row["DES"] if _has_des else "",
+                            )
+                            _cur = st.session_state["others_overrides"].get(
+                                _ok, "Others (keep)"
+                            )
+                            if _cur not in _override_opts:
+                                _cur = "Others (keep)"
+                            _choice = st.selectbox(
+                                "Reassign",
+                                _override_opts,
+                                index=_override_opts.index(_cur),
+                                key=f"override_{_i}_{'__'.join(str(x) for x in _ok)}",
+                                label_visibility="collapsed",
+                            )
+                            if _choice != "Others (keep)":
+                                st.session_state["others_overrides"][_ok] = _choice
+                                save_overrides(st.session_state["others_overrides"])
+                            elif _ok in st.session_state["others_overrides"]:
+                                del st.session_state["others_overrides"][_ok]
+                                save_overrides(st.session_state["others_overrides"])
+                    if st.session_state["others_overrides"]:
+                        st.info(
+                            "Overrides updated; press **▶ Run** to apply them to the report."
                         )
-                    with _c2:
-                        _ok = (
-                            _row["Customer Name"],
-                            _row["Part Number"],
-                            _row["Month"],
-                            _row["DES"] if _has_des else "",
-                        )
-                        _cur = st.session_state["others_overrides"].get(
-                            _ok, "Others (keep)"
-                        )
-                        if _cur not in _override_opts:
-                            _cur = "Others (keep)"
-                        _choice = st.selectbox(
-                            "Reassign",
-                            _override_opts,
-                            index=_override_opts.index(_cur),
-                            key=f"override_{_i}_{'__'.join(str(x) for x in _ok)}",
-                            label_visibility="collapsed",
-                        )
-                        if _choice != "Others (keep)":
-                            st.session_state["others_overrides"][_ok] = _choice
-                            save_overrides(st.session_state["others_overrides"])
-                        elif _ok in st.session_state["others_overrides"]:
-                            del st.session_state["others_overrides"][_ok]
-                            save_overrides(st.session_state["others_overrides"])
-                if st.session_state["others_overrides"]:
-                    st.info(
-                        "Overrides updated; press **▶ Run** to apply them to the report."
-                    )
 
-        st.download_button(
-            "📥 Download Excel Report",
-            data=_buf,
-            file_name=datetime.now().strftime("sales_report_%Y%m%d_%H%M.xlsx"),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+            st.download_button(
+                "📥 Download Excel Report",
+                data=_buf,
+                file_name=datetime.now().strftime("sales_report_%Y%m%d_%H%M.xlsx"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-# ?? TAB 2: Shipping Record Search ????????????????????????????????
+# ── TAB 2: Shipping Record Search ─────────────────────────────────────────────
 with main_tab2:
-    if not has_shipping:
+    _yr_ship = st.multiselect(
+        "📅 Select years to analyze",
+        options=available_years,
+        default=default_years,
+        key="year_shipping",
+    )
+    st.divider()
+
+    df = (
+        _combined_df[_combined_df["Ship Date"].dt.year.isin(_yr_ship)].copy()
+        if _yr_ship else pd.DataFrame()
+    )
+
+    if df.empty:
+        st.info(
+            "Please select at least one year."
+            if not _yr_ship else "No data for the selected year(s)."
+        )
+    elif not has_shipping:
         st.warning(
             "Shipping Record Search requires **Currency**, **UP**, and **TP(USD)** "
             "columns in the data files. These columns were not found."
@@ -442,7 +454,7 @@ with main_tab2:
     else:
         st.subheader("🔎 Search by Part Number")
 
-        # ?? Search history (quick-select) ??
+        # ── Search history (quick-select) ──
         if "search_history" not in st.session_state:
             st.session_state["search_history"] = []
         if st.session_state["search_history"]:
@@ -470,7 +482,7 @@ with main_tab2:
                 if k.strip()
             ]
 
-            # ?? Cached search ??
+            # ── Cached search ──
             _indices = cached_search_indices(
                 tuple(df["Part Number"].tolist()),
                 tuple(keywords),
@@ -486,7 +498,7 @@ with main_tab2:
             if results.empty:
                 st.info("No matching shipping records found.")
             else:
-                # ?? Save to search history ??
+                # ── Save to search history ──
                 _q = pn_query.strip()
                 _hist = st.session_state["search_history"]
                 if _q in _hist:
@@ -494,7 +506,7 @@ with main_tab2:
                 _hist.insert(0, _q)
                 st.session_state["search_history"] = _hist[:10]
 
-                # ?? Part Number selection (narrow down) ??
+                # ── Part Number selection (narrow down) ──
                 _matched_pns = sorted(results["Part Number"].unique())
                 if len(_matched_pns) > 1:
                     _pn_selection = st.multiselect(
@@ -509,7 +521,7 @@ with main_tab2:
 
                 results["GP"] = results["UP"] - results["TP(USD)"]
 
-                # ?? Customer filter (optional) ??
+                # ── Customer filter (optional) ──
                 _matched_custs = sorted(results["Customer Name"].unique())
                 _cust_filter_active = False
                 if len(_matched_custs) > 1:
@@ -529,7 +541,7 @@ with main_tab2:
                     + ", ".join(f"`{k}`" for k in keywords)
                 )
 
-                # ?? QTY TTL & weighted averages ??
+                # ── QTY TTL & weighted averages ──
                 _total_qty = results["QTY"].sum()
                 if _total_qty > 0:
                     _wavg_up = (
@@ -546,14 +558,14 @@ with main_tab2:
                     if _wavg_up != 0 else "-"
                 )
 
-                # ?? Metric cards ??
+                # ── Metric cards ──
                 _mc1, _mc2, _mc3, _mc4 = st.columns(4)
                 _mc1.metric("Total QTY", f"{_total_qty:,}")
                 _mc2.metric("Avg UP (wavg)", f"{_wavg_up:,.2f}")
                 _mc3.metric("Avg TP(USD) (wavg)", f"{_wavg_tp:,.2f}")
                 _mc4.metric("GP%", _wavg_gp_pct)
 
-                # ?? Charts (3 columns, all Altair) ??
+                # ── Charts (3 columns, all Altair) ──
                 _cc1, _cc2, _cc3 = st.columns(3)
                 with _cc1:
                     st.markdown("**📈 UP & TP(USD) Monthly Trend**")
@@ -588,7 +600,7 @@ with main_tab2:
                         use_container_width=True,
                     )
 
-                # ?? GP% conditional formatting helper ??
+                # ── GP% conditional formatting helper ──
                 def _color_gp_pct(val):
                     if isinstance(val, str) and "%" in val:
                         try:
@@ -601,7 +613,7 @@ with main_tab2:
                             pass
                     return ""
 
-                # ?? Format display ??
+                # ── Format display ──
                 results["GP%"] = results.apply(
                     lambda r: f"{r['GP'] / r['UP'] * 100:.1f}%"
                     if r["UP"] != 0 else "-",
@@ -626,7 +638,7 @@ with main_tab2:
                 )
                 st.dataframe(styled, use_container_width=True)
 
-                # ?? Part Number summary table (when customer filter active) ??
+                # ── Part Number summary table (when customer filter active) ──
                 if _cust_filter_active:
                     st.divider()
                     st.markdown("**📋 Part Number Summary**")
@@ -652,422 +664,446 @@ with main_tab2:
                         hide_index=True,
                     )
 
-# ?? TAB 3: Company Dashboard ????????????????????????????????????
+# ── TAB 3: Company Dashboard ──────────────────────────────────────────────────
 with main_tab3:
-    # ?? Data prep (apply SALE_Person filter) ??
-    dash_df = df.copy()
-    dash_yoy = yoy_df.copy() if yoy_df is not None else None
-    if _sp_visible_custs:
-        dash_df = dash_df[dash_df["Customer Name"].isin(_sp_visible_custs)]
-        if dash_yoy is not None:
-            dash_yoy = dash_yoy[
-                dash_yoy["Customer Name"].isin(_sp_visible_custs)
-            ]
+    _yr_dash = st.multiselect(
+        "📅 Select years to analyze",
+        options=available_years,
+        default=default_years,
+        key="year_dashboard",
+    )
+    st.divider()
 
-    # YoY delta: compare max selected year vs previous year
-    _dash_max_yr = max(selected_years)
-    _dash_curr = dash_df[dash_df["Ship Date"].dt.year == _dash_max_yr]
-    _kpis_yoy = calc_dashboard_kpis(_dash_curr, dash_yoy)
-    _kpis_all = calc_dashboard_kpis(dash_df)
+    df = (
+        _combined_df[_combined_df["Ship Date"].dt.year.isin(_yr_dash)].copy()
+        if _yr_dash else pd.DataFrame()
+    )
 
-    # ── FCST Integration ──────────────────────────────────────────
-    _now = datetime.now()
-    _current_month = _now.month
-    _current_yr = _now.year
-    # Only blend when the current calendar year is in the selection
-    _do_fcst = _dash_max_yr == _current_yr
-
-    _fcst_raw = pd.DataFrame()
-    _blended_monthly = pd.DataFrame()
-    _budget_monthly = pd.DataFrame()
-    _fcst_cat_monthly = pd.DataFrame()
-
-    if _do_fcst:
-        try:
-            _sheet_arg = None if _fcst_sheet == "All Sheets" else _fcst_sheet
-            fcst_loader.clear_unmatched_customers()
-            _fcst_raw = fcst_loader.get_fcst_for_dashboard(
-                str(DATA_DIR), customer=None, sheet_name=_sheet_arg
-            )
-            if not _fcst_raw.empty:
-                # Customer names are already normalized inside fcst_loader._parse_sheet()
-                # via normalize_fcst_customer() — no post-processing needed here.
-                # Prepare actual_for_blend: current-year rows, renamed for blend function
-                _act_yr = dash_df[dash_df["Ship Date"].dt.year == _current_yr].copy()
-                _act_yr = _act_yr.rename(columns={"Customer Name": "Customer"})
-                _act_yr["Month"] = _act_yr["Ship Date"].dt.month
-
-                _blended_raw = fcst_loader.blend_actual_fcst(
-                    _act_yr, _fcst_raw, _current_month
-                )
-                _blended_monthly = fcst_loader.agg_blended_monthly(_blended_raw)
-                _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
-                _fcst_cat_monthly = fcst_loader.agg_fcst_category_monthly(_fcst_raw)
-        except Exception as _fcst_err:
-            print(f"[FCST] Warning: failed to load/blend FCST data: {_fcst_err}")
-
-    # Collect unmatched FCST customers for warning
-    _unmatched_fcst = fcst_loader.get_unmatched_customers() if _do_fcst else set()
-    if _unmatched_fcst:
-        st.warning(
-            f"⚠️ FCST 未匹配客戶 ({len(_unmatched_fcst)} 個) — "
-            f"請更新 aliases.json 的 fcst_customer section。"
+    if df.empty:
+        st.info(
+            "Please select at least one year."
+            if not _yr_dash else "No data for the selected year(s)."
         )
-        with st.expander(f"🔍 點擊查看未匹配客戶詳情 ({len(_unmatched_fcst)} 個)", expanded=False):
-            _unmatched_df = pd.DataFrame(
-                sorted(_unmatched_fcst),
-                columns=["Customer Name", "Sheet"],
+    else:
+        # ── YoY comparison data ───────────────────────────────────────────────
+        _max_sel_year = max(_yr_dash)
+        _yoy_year = _max_sel_year - 1
+        _yoy_data = _combined_df[_combined_df["Ship Date"].dt.year == _yoy_year]
+        yoy_df = _yoy_data.copy() if not _yoy_data.empty else None
+
+        # ── Data prep (apply SALE_Person filter) ─────────────────────────────
+        dash_df = df.copy()
+        dash_yoy = yoy_df.copy() if yoy_df is not None else None
+        if _sp_visible_custs:
+            dash_df = dash_df[dash_df["Customer Name"].isin(_sp_visible_custs)]
+            if dash_yoy is not None:
+                dash_yoy = dash_yoy[
+                    dash_yoy["Customer Name"].isin(_sp_visible_custs)
+                ]
+
+        # YoY delta: compare max selected year vs previous year
+        _dash_max_yr = _max_sel_year
+        _dash_curr = dash_df[dash_df["Ship Date"].dt.year == _dash_max_yr]
+        _kpis_yoy = calc_dashboard_kpis(_dash_curr, dash_yoy)
+        _kpis_all = calc_dashboard_kpis(dash_df)
+
+        # ── FCST Integration ──────────────────────────────────────────────────
+        _now = datetime.now()
+        _current_month = _now.month
+        _current_yr = _now.year
+        # Only blend when the current calendar year is in the selection
+        _do_fcst = _dash_max_yr == _current_yr
+
+        _fcst_raw = pd.DataFrame()
+        _blended_monthly = pd.DataFrame()
+        _budget_monthly = pd.DataFrame()
+        _fcst_cat_monthly = pd.DataFrame()
+        _blended_raw = pd.DataFrame()
+
+        if _do_fcst:
+            try:
+                _sheet_arg = None if _fcst_sheet == "All Sheets" else _fcst_sheet
+                fcst_loader.clear_unmatched_customers()
+                _fcst_raw = fcst_loader.get_fcst_for_dashboard(
+                    str(DATA_DIR), customer=None, sheet_name=_sheet_arg
+                )
+                if not _fcst_raw.empty:
+                    # Customer names are already normalized inside fcst_loader._parse_sheet()
+                    # via normalize_fcst_customer() — no post-processing needed here.
+                    # Prepare actual_for_blend: current-year rows, renamed for blend function
+                    _act_yr = dash_df[dash_df["Ship Date"].dt.year == _current_yr].copy()
+                    _act_yr = _act_yr.rename(columns={"Customer Name": "Customer"})
+                    _act_yr["Month"] = _act_yr["Ship Date"].dt.month
+
+                    _blended_raw = fcst_loader.blend_actual_fcst(
+                        _act_yr, _fcst_raw, _current_month
+                    )
+                    _blended_monthly = fcst_loader.agg_blended_monthly(_blended_raw)
+                    _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
+                    _fcst_cat_monthly = fcst_loader.agg_fcst_category_monthly(_fcst_raw)
+            except Exception as _fcst_err:
+                print(f"[FCST] Warning: failed to load/blend FCST data: {_fcst_err}")
+
+        # Collect unmatched FCST customers for warning
+        _unmatched_fcst = fcst_loader.get_unmatched_customers() if _do_fcst else set()
+        if _unmatched_fcst:
+            st.warning(
+                f"⚠️ FCST 未匹配客戶 ({len(_unmatched_fcst)} 個) — "
+                f"請更新 aliases.json 的 fcst_customer section。"
             )
-            st.dataframe(_unmatched_df, hide_index=True, use_container_width=True)
+            with st.expander(f"🔍 點擊查看未匹配客戶詳情 ({len(_unmatched_fcst)} 個)", expanded=False):
+                _unmatched_df = pd.DataFrame(
+                    sorted(_unmatched_fcst),
+                    columns=["Customer Name", "Sheet"],
+                )
+                st.dataframe(_unmatched_df, hide_index=True, use_container_width=True)
 
-    # ?? Section 1: KPI Metric Cards ??
-    def _fmt_delta(val, suffix="%"):
-        if val is None:
-            return "N/A"
-        return f"{val:+,.1f}{suffix}"
+        # ── Section 1: KPI Metric Cards ───────────────────────────────────────
+        def _fmt_delta(val, suffix="%"):
+            if val is None:
+                return "N/A"
+            return f"{val:+,.1f}{suffix}"
 
-    # Container A — Overview
-    with st.container(border=True):
-        st.subheader("📌 Overview")
-        if dash_yoy is not None:
-            st.caption(f"YoY delta: {_dash_max_yr} vs {_dash_max_yr - 1}")
-        _k1, _k2, _k3, _k4 = st.columns(4)
-        _k1.metric("💰 Revenue (TWD)", fmt_num(_kpis_all['revenue']),
-                   delta=_fmt_delta(_kpis_yoy["revenue_yoy"]))
-        _k2.metric("💵 Gross Profit (TWD)", fmt_num(_kpis_all['gp']),
-                   delta=_fmt_delta(_kpis_yoy["gp_yoy"]))
-        _k3.metric("📈 GP Margin", f"{_kpis_all['gp_pct']:.1f}%",
-                   delta=_fmt_delta(_kpis_yoy["gp_pct_yoy"], " ppt"))
-        _k4.metric("📦 Units Sold", f"{_kpis_all['qty']:,.0f}",
-                   delta=_fmt_delta(_kpis_yoy["qty_yoy"]))
-        _k4.caption("CDR + Tablet only")
+        # Container A — Overview
+        with st.container(border=True):
+            st.subheader("📌 Overview")
+            if dash_yoy is not None:
+                st.caption(f"YoY delta: {_dash_max_yr} vs {_dash_max_yr - 1}")
+            _k1, _k2, _k3, _k4 = st.columns(4)
+            _k1.metric("💰 Revenue (TWD)", fmt_num(_kpis_all['revenue']),
+                       delta=_fmt_delta(_kpis_yoy["revenue_yoy"]))
+            _k2.metric("💵 Gross Profit (TWD)", fmt_num(_kpis_all['gp']),
+                       delta=_fmt_delta(_kpis_yoy["gp_yoy"]))
+            _k3.metric("📈 GP Margin", f"{_kpis_all['gp_pct']:.1f}%",
+                       delta=_fmt_delta(_kpis_yoy["gp_pct_yoy"], " ppt"))
+            _k4.metric("📦 Units Sold", f"{_kpis_all['qty']:,.0f}",
+                       delta=_fmt_delta(_kpis_yoy["qty_yoy"]))
+            _k4.caption("CDR + Tablet only")
 
-    # Full-Year Forecast row (only shown when current year is selected and FCST loaded)
-    if not _blended_monthly.empty:
-        _ytd_rev = _blended_monthly[_blended_monthly["Source"] == "Actual"]["Revenue"].sum()
-        _ytd_gp = _blended_monthly[_blended_monthly["Source"] == "Actual"]["GP"].sum()
-        _fy_rev = _blended_monthly["Revenue"].sum()
-        _fy_gp = _blended_monthly["GP"].sum()
-        _fy_gp_pct = _fy_gp / _fy_rev * 100 if _fy_rev else 0.0
-        _fy_qty = _blended_monthly["QTY"].sum()
+        # Full-Year Forecast row (only shown when current year is selected and FCST loaded)
+        if not _blended_monthly.empty:
+            _ytd_rev = _blended_monthly[_blended_monthly["Source"] == "Actual"]["Revenue"].sum()
+            _ytd_gp = _blended_monthly[_blended_monthly["Source"] == "Actual"]["GP"].sum()
+            _fy_rev = _blended_monthly["Revenue"].sum()
+            _fy_gp = _blended_monthly["GP"].sum()
+            _fy_gp_pct = _fy_gp / _fy_rev * 100 if _fy_rev else 0.0
+            _fy_qty = _blended_monthly["QTY"].sum()
+
+            st.divider()
+
+            # Container B — Full-Year Forecast
+            with st.container(border=True):
+                st.subheader("📊 Full-Year Forecast")
+                st.caption(f"YTD Actual + Remaining FCST — sheet: **{_fcst_sheet}**")
+                _fk1, _fk2, _fk3, _fk4 = st.columns(4)
+                _fk1.metric("💰 FY Revenue Forecast (TWD)", fmt_num(_fy_rev))
+                _fk1.caption(f"YTD: {fmt_num(_ytd_rev)}")
+                _fk2.metric("💵 FY Gross Profit Forecast (TWD)", fmt_num(_fy_gp))
+                _fk2.caption(f"YTD: {fmt_num(_ytd_gp)}")
+                _fk3.metric("📈 FY GP Margin Forecast", f"{_fy_gp_pct:.1f}%")
+                _fk4.metric("📦 FY Units Forecast", f"{_fy_qty:,.0f}")
+
+            # Container C — Budget Achievement
+            try:
+                _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
+                if not _budget_monthly.empty:
+                    _fy_budget_rev = _budget_monthly["Revenue"].sum()
+                    _budget_achievement_pct = (
+                        _ytd_rev / _fy_budget_rev * 100 if _fy_budget_rev else 0.0
+                    )
+                    st.divider()
+                    with st.container(border=True):
+                        st.subheader("🎯 Budget Achievement")
+                        _bk1, _bk2 = st.columns(2)
+                        _bk1.metric("🎯 Budget Achievement", f"{_budget_achievement_pct:.1f}%")
+                        _bk1.caption("YTD vs FY Budget")
+                        _bk2.metric("📊 FY Budget Revenue (TWD)", fmt_num(_fy_budget_rev))
+                        _bk2.caption(f"Current: {fmt_num(_ytd_rev)}")
+            except Exception as _budget_err:
+                print(f"[Dashboard] Warning: Failed to calculate Budget Achievement%: {_budget_err}")
 
         st.divider()
 
-        # Container B — Full-Year Forecast
-        with st.container(border=True):
-            st.subheader("📊 Full-Year Forecast")
-            st.caption(f"YTD Actual + Remaining FCST — sheet: **{_fcst_sheet}**")
-            _fk1, _fk2, _fk3, _fk4 = st.columns(4)
-            _fk1.metric("💰 FY Revenue Forecast (TWD)", fmt_num(_fy_rev))
-            _fk1.caption(f"YTD: {fmt_num(_ytd_rev)}")
-            _fk2.metric("💵 FY Gross Profit Forecast (TWD)", fmt_num(_fy_gp))
-            _fk2.caption(f"YTD: {fmt_num(_ytd_gp)}")
-            _fk3.metric("📈 FY GP Margin Forecast", f"{_fy_gp_pct:.1f}%")
-            _fk4.metric("📦 FY Units Forecast", f"{_fy_qty:,.0f}")
+        # ── Section 2: Monthly Trends ─────────────────────────────────────────
+        st.subheader("📈 Monthly Trends")
+        _trend = build_monthly_trend(dash_df)
+        _multi_yr = len(_yr_dash) > 1
+        _tr1, _tr2 = st.columns(2)
 
-        # Container C — Budget Achievement
-        try:
-            _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
-            if not _budget_monthly.empty:
-                _fy_budget_rev = _budget_monthly["Revenue"].sum()
-                _budget_achievement_pct = (
-                    _ytd_rev / _fy_budget_rev * 100 if _fy_budget_rev else 0.0
-                )
-                st.divider()
-                with st.container(border=True):
-                    st.subheader("🎯 Budget Achievement")
-                    _bk1, _bk2 = st.columns(2)
-                    _bk1.metric("🎯 Budget Achievement", f"{_budget_achievement_pct:.1f}%")
-                    _bk1.caption("YTD vs FY Budget")
-                    _bk2.metric("📊 FY Budget Revenue (TWD)", fmt_num(_fy_budget_rev))
-                    _bk2.caption(f"Current: {fmt_num(_ytd_rev)}")
-        except Exception as _budget_err:
-            print(f"[Dashboard] Warning: Failed to calculate Budget Achievement%: {_budget_err}")
-
-    st.divider()
-
-    # ?? Section 2: Monthly Trends ??
-    st.subheader("📈 Monthly Trends")
-    _trend = build_monthly_trend(dash_df)
-    _multi_yr = len(selected_years) > 1
-    _tr1, _tr2 = st.columns(2)
-    
-    # Prepare blended data with budget (if available)
-    _chart_data_blended = _blended_monthly.copy() if not _blended_monthly.empty else pd.DataFrame()
-    if not _budget_monthly.empty and not _chart_data_blended.empty:
-        _chart_data_blended = pd.concat(
-            [_chart_data_blended, _budget_monthly],
-            ignore_index=True
-        )
-    
-    with _tr1:
-        st.markdown("**📈 Monthly Revenue Trend**")
-        if not _chart_data_blended.empty:
-            st.altair_chart(
-                chart_revenue_trend_blended(_chart_data_blended),
-                use_container_width=True,
-            )
-        else:
-            st.altair_chart(
-                chart_revenue_trend(_trend, multi_year=_multi_yr),
-                use_container_width=True,
-            )
-    with _tr2:
-        st.markdown("**📉 Monthly GP & GP% Trend**")
-        if not _chart_data_blended.empty:
-            st.altair_chart(
-                chart_gp_trend_blended(_chart_data_blended),
-                use_container_width=True,
-            )
-        else:
-            st.altair_chart(
-                chart_gp_dual_axis(_trend),
-                use_container_width=True,
+        # Prepare blended data with budget (if available)
+        _chart_data_blended = _blended_monthly.copy() if not _blended_monthly.empty else pd.DataFrame()
+        if not _budget_monthly.empty and not _chart_data_blended.empty:
+            _chart_data_blended = pd.concat(
+                [_chart_data_blended, _budget_monthly],
+                ignore_index=True
             )
 
-    st.divider()
-
-    # ?? Section 3: Category Analysis ??
-    st.subheader("🧩 Category Analysis")
-    _cat_br = build_category_breakdown(dash_df)
-    _cat_mo = build_monthly_category(dash_df)
-    _cat_row1_c1, _cat_row1_c2 = st.columns(2)
-    with _cat_row1_c1:
-        st.markdown("**🍩 Revenue by Category**")
-        st.altair_chart(
-            chart_category_donut(_cat_br), use_container_width=True,
-        )
-    with _cat_row1_c2:
-        st.markdown("**📊 Category Revenue Trend**")
-        st.altair_chart(
-            chart_category_stacked(_cat_mo), use_container_width=True,
-        )
-    if not _fcst_cat_monthly.empty:
-        _cat_row2_c1, _cat_row2_c2 = st.columns(2)
-    else:
-        _cat_row2_c1 = st.columns(1)[0]
-    with _cat_row2_c1:
-        st.markdown("**🤖 AI_SW Monthly Revenue Trend**")
-        st.altair_chart(
-            chart_ai_sw_revenue_trend(_cat_mo), use_container_width=True,
-        )
-    if not _fcst_cat_monthly.empty:
-        with _cat_row2_c2:
-            st.markdown("**📊 FCST Category Revenue**")
-            _fcst_cat_display = _fcst_cat_monthly.rename(
-                columns={"Cat": "Category", "Period": "Month"}
-            )
-            st.altair_chart(
-                chart_category_stacked(_fcst_cat_display), use_container_width=True,
-            )
-
-    st.divider()
-
-    # ?? Section 4: Top N Customers ??
-    st.subheader("🏆 Top Customers")
-    _top_n = st.slider(
-        "Number of customers", 5, 30, 10, key="dash_top_n",
-    )
-    _fcst_blended_for_top = _blended_raw if (_do_fcst and not _blended_raw.empty) else None
-    _top = build_top_customers(dash_df, _top_n, dash_yoy, fcst_df=_fcst_blended_for_top)
-    _tn1, _tn2 = st.columns(2)
-    with _tn1:
-        st.markdown(f"**🏆 Top {_top_n} Customers by Revenue**")
-        st.altair_chart(
-            chart_top_customers_bar(_top), use_container_width=True,
-        )
-    with _tn2:
-        st.markdown(f"**📋 Top {_top_n} Customers**")
-
-        def _gp_color(val):
-            try:
-                n = float(val)
-                if n >= 30:
-                    return "color: #2e7d32; font-weight: bold"
-                if n < 15:
-                    return "color: #c62828; font-weight: bold"
-            except (ValueError, TypeError):
-                pass
-            return ""
-
-        def _achievement_color(val):
-            try:
-                n = float(val)
-                if n >= 80:
-                    return "color: #2e7d32; font-weight: bold"
-                if n < 50:
-                    return "color: #c62828; font-weight: bold"
-            except (ValueError, TypeError):
-                pass
-            return ""
-
-        _fmt = {"Revenue": "{:,.0f}", "GP": "{:,.0f}",
-                "GP%": "{:.1f}", "QTY": "{:,.0f}", "YoY%": "{:+.1f}"}
-        _style_subsets = [("GP%", _gp_color)]
-        if "FY Forecast" in _top.columns:
-            _fmt["FY Forecast"] = "{:,.0f}"
-            _fmt["Achievement%"] = "{:.1f}"
-            _style_subsets.append(("Achievement%", _achievement_color))
-
-        _styled = _top.style.format(_fmt, na_rep="-")
-        for _col, _fn in _style_subsets:
-            _styled = _styled.map(_fn, subset=[_col])
-
-        st.dataframe(_styled, use_container_width=True)
-
-    st.divider()
-
-    # ?? Section 5: Customer Drill-Down ??
-    st.subheader("🔍 Customer Drill-Down")
-    _all_dash_custs = sorted(dash_df["Customer Name"].dropna().unique())
-    _top_names = _top["Customer Name"].tolist()
-
-    _dd1, _dd2 = st.columns([2, 1])
-    with _dd1:
-        _dd_cust = st.selectbox(
-            "Select from Top customers",
-            options=[""] + _top_names,
-            format_func=lambda x: "Select a customer..." if x == "" else x,
-            key="dash_dd_cust",
-        )
-    with _dd2:
-        _dd_search = st.text_input(
-            "Or search by name", key="dash_dd_search",
-        )
-
-    _targets = []
-    if _dd_search.strip():
-        _matches = [
-            c for c in _all_dash_custs
-            if _dd_search.strip().lower() in c.lower()
-        ]
-        if _matches:
-            _targets = st.multiselect(
-                "Matching customers (multi-select)",
-                _matches, key="dash_dd_match",
-            )
-        else:
-            st.info("No matching customers.")
-    elif _dd_cust:
-        _targets = [_dd_cust]
-
-    if _targets:
-        _dk, _dm, _dcat = build_customer_detail(dash_df, _targets)
-        if _dk:
-            # Prepare FCST data for selected customers
-            _blended_chart_df = pd.DataFrame()
-            _fy_forecast_revenue = 0
-            _fy_forecast_gp = 0
-            _fy_budget_revenue = 0
-            _budget_achievement_pct = 0
-            _fcst_filtered = pd.DataFrame()
-            if _do_fcst and not _fcst_raw.empty:
-                _fcst_filtered = _fcst_raw[_fcst_raw["Customer"].isin(_targets)].copy()
-                if not _fcst_filtered.empty:
-                    _actual_df = dash_df[dash_df["Customer Name"].isin(_targets)].rename(
-                        columns={"Customer Name": "Customer"}
-                    ).copy()
-                    _actual_df["Month"] = _actual_df["Ship Date"].dt.month
-                    _blended_df = fcst_loader.blend_actual_fcst(
-                        _actual_df, _fcst_filtered, _current_month
-                    )
-                    _blended_monthly = fcst_loader.agg_blended_monthly(_blended_df)
-                    _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_filtered)
-                    _blended_chart_df = pd.concat([_blended_monthly, _budget_monthly], ignore_index=True)
-                    # FY Forecast KPIs
-                    _fy_forecast_revenue = _blended_df["AMT"].sum()
-                    _fy_forecast_gp = _blended_df["GP"].sum()
-                    _fy_budget_revenue = _budget_monthly["Revenue"].sum() if not _budget_monthly.empty else 0
-                    # YTD Actual Revenue (up to current month)
-                    _ytd_actual_revenue = _actual_df[
-                        _actual_df["Ship Date"].dt.month <= _current_month
-                    ]["SALES Total AMT"].sum()
-                    _budget_achievement_pct = (
-                        _ytd_actual_revenue / _fy_budget_revenue * 100
-                    ) if _fy_budget_revenue else 0
-
-            _label = (
-                ", ".join(_targets)
-                if len(_targets) <= 3
-                else f"{_targets[0]} + {len(_targets)-1} others"
-            )
-            st.markdown(f"### {_label}")
-            with st.container(border=True):
-                _dkc1, _dkc2, _dkc3, _dkc4 = st.columns(4)
-                _dkc1.metric("Revenue (TWD)", fmt_num(_dk['revenue']))
-                _dkc2.metric("Gross Profit (TWD)", fmt_num(_dk['gp']))
-                _dkc3.metric("GP Margin", f"{_dk['gp_pct']:.1f}%")
-                _dkc4.metric("Units Sold", f"{_dk['qty']:,.0f}")
-                _dkc4.caption("CDR + Tablet only")
-
-            # FY Forecast KPIs row
-            if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
-                with st.container(border=True):
-                    st.markdown("**FY Forecast KPIs**")
-                    _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
-                    _fkc1.metric("FY Forecast Revenue (TWD)", fmt_num(_fy_forecast_revenue))
-                    _fkc2.metric("FY Forecast Gross Profit (TWD)", fmt_num(_fy_forecast_gp))
-                    _fkc3.metric("Budget Achievement", f"{_budget_achievement_pct:.1f}%")
-                    _fkc4.metric("FY Budget Revenue (TWD)", fmt_num(_fy_budget_revenue))
-
-            if not _dm.empty and not _dcat.empty:
-                _ddc1, _ddc2 = st.columns(2)
-                with _ddc1:
-                    if not _blended_chart_df.empty:
-                        st.markdown("**📈 Monthly Revenue (Actual + Forecast + Budget)**")
-                        st.altair_chart(
-                            chart_revenue_trend_blended(_blended_chart_df),
-                            use_container_width=True,
-                        )
-                    else:
-                        st.markdown("**📈 Monthly Revenue**")
-                        st.altair_chart(
-                            chart_customer_monthly(_dm),
-                            use_container_width=True,
-                        )
-                with _ddc2:
-                    st.markdown("**🍩 Category Breakdown**")
-                    st.altair_chart(
-                        chart_customer_cat_donut(_dcat),
-                        use_container_width=True,
-                    )
-
-            # QTY by Category grouped bar
-            _qty_cat = build_customer_monthly_qty_by_cat(
-                dash_df[dash_df["Customer Name"].isin(_targets)]
-            )
-            if not _qty_cat.empty:
-                st.markdown("**📦 Monthly QTY by Category**")
+        with _tr1:
+            st.markdown("**📈 Monthly Revenue Trend**")
+            if not _chart_data_blended.empty:
                 st.altair_chart(
-                    chart_customer_qty_by_cat(_qty_cat),
+                    chart_revenue_trend_blended(_chart_data_blended),
+                    use_container_width=True,
+                )
+            else:
+                st.altair_chart(
+                    chart_revenue_trend(_trend, multi_year=_multi_yr),
+                    use_container_width=True,
+                )
+        with _tr2:
+            st.markdown("**📉 Monthly GP & GP% Trend**")
+            if not _chart_data_blended.empty:
+                st.altair_chart(
+                    chart_gp_trend_blended(_chart_data_blended),
+                    use_container_width=True,
+                )
+            else:
+                st.altair_chart(
+                    chart_gp_dual_axis(_trend),
                     use_container_width=True,
                 )
 
-            if not _dm.empty:
-                st.markdown("**📋 Monthly Detail**")
-                st.dataframe(
-                    _dm.style.format({
-                        "Revenue": "{:,.0f}", "GP": "{:,.0f}",
-                        "GP%": "{:.1f}", "QTY": "{:,.0f}",
-                    }),
-                    use_container_width=True, hide_index=True,
-                )
+        st.divider()
 
-            # Part Number detail (CDR + Tablet)
-            _pn = build_pn_detail(
-                dash_df[dash_df["Customer Name"].isin(_targets)],
-                has_shipping,
+        # ── Section 3: Category Analysis ─────────────────────────────────────
+        st.subheader("🧩 Category Analysis")
+        _cat_br = build_category_breakdown(dash_df)
+        _cat_mo = build_monthly_category(dash_df)
+        _cat_row1_c1, _cat_row1_c2 = st.columns(2)
+        with _cat_row1_c1:
+            st.markdown("**🍩 Revenue by Category**")
+            st.altair_chart(
+                chart_category_donut(_cat_br), use_container_width=True,
             )
-            if not _pn.empty:
-                st.markdown("**📦 Part Number Detail (CDR + Tablet)**")
-                _pn_fmt = {"QTY": "{:,.0f}"}
-                if "Latest UP" in _pn.columns:
-                    _pn_fmt["Latest UP"] = "{:,.2f}"
-                st.dataframe(
-                    _pn.style.format(_pn_fmt),
-                    use_container_width=True, hide_index=True,
-                )
+        with _cat_row1_c2:
+            st.markdown("**📊 Category Revenue Trend**")
+            st.altair_chart(
+                chart_category_stacked(_cat_mo), use_container_width=True,
+            )
+        if not _fcst_cat_monthly.empty:
+            _cat_row2_c1, _cat_row2_c2 = st.columns(2)
         else:
-            st.info("No data found for selected customer(s).")
+            _cat_row2_c1 = st.columns(1)[0]
+        with _cat_row2_c1:
+            st.markdown("**🤖 AI_SW Monthly Revenue Trend**")
+            st.altair_chart(
+                chart_ai_sw_revenue_trend(_cat_mo), use_container_width=True,
+            )
+        if not _fcst_cat_monthly.empty:
+            with _cat_row2_c2:
+                st.markdown("**📊 FCST Category Revenue**")
+                _fcst_cat_display = _fcst_cat_monthly.rename(
+                    columns={"Cat": "Category", "Period": "Month"}
+                )
+                st.altair_chart(
+                    chart_category_stacked(_fcst_cat_display), use_container_width=True,
+                )
 
+        st.divider()
 
+        # ── Section 4: Top N Customers ────────────────────────────────────────
+        st.subheader("🏆 Top Customers")
+        _top_n = st.slider(
+            "Number of customers", 5, 30, 10, key="dash_top_n",
+        )
+        _fcst_blended_for_top = _blended_raw if (_do_fcst and not _blended_raw.empty) else None
+        _top = build_top_customers(dash_df, _top_n, dash_yoy, fcst_df=_fcst_blended_for_top)
+        _tn1, _tn2 = st.columns(2)
+        with _tn1:
+            st.markdown(f"**🏆 Top {_top_n} Customers by Revenue**")
+            st.altair_chart(
+                chart_top_customers_bar(_top), use_container_width=True,
+            )
+        with _tn2:
+            st.markdown(f"**📋 Top {_top_n} Customers**")
+
+            def _gp_color(val):
+                try:
+                    n = float(val)
+                    if n >= 30:
+                        return "color: #2e7d32; font-weight: bold"
+                    if n < 15:
+                        return "color: #c62828; font-weight: bold"
+                except (ValueError, TypeError):
+                    pass
+                return ""
+
+            def _achievement_color(val):
+                try:
+                    n = float(val)
+                    if n >= 80:
+                        return "color: #2e7d32; font-weight: bold"
+                    if n < 50:
+                        return "color: #c62828; font-weight: bold"
+                except (ValueError, TypeError):
+                    pass
+                return ""
+
+            _fmt = {"Revenue": "{:,.0f}", "GP": "{:,.0f}",
+                    "GP%": "{:.1f}", "QTY": "{:,.0f}", "YoY%": "{:+.1f}"}
+            _style_subsets = [("GP%", _gp_color)]
+            if "FY Forecast" in _top.columns:
+                _fmt["FY Forecast"] = "{:,.0f}"
+                _fmt["Achievement%"] = "{:.1f}"
+                _style_subsets.append(("Achievement%", _achievement_color))
+
+            _styled = _top.style.format(_fmt, na_rep="-")
+            for _col, _fn in _style_subsets:
+                _styled = _styled.map(_fn, subset=[_col])
+
+            st.dataframe(_styled, use_container_width=True)
+
+        st.divider()
+
+        # ── Section 5: Customer Drill-Down ────────────────────────────────────
+        st.subheader("🔍 Customer Drill-Down")
+        _all_dash_custs = sorted(dash_df["Customer Name"].dropna().unique())
+        _top_names = _top["Customer Name"].tolist()
+
+        _dd1, _dd2 = st.columns([2, 1])
+        with _dd1:
+            _dd_cust = st.selectbox(
+                "Select from Top customers",
+                options=[""] + _top_names,
+                format_func=lambda x: "Select a customer..." if x == "" else x,
+                key="dash_dd_cust",
+            )
+        with _dd2:
+            _dd_search = st.text_input(
+                "Or search by name", key="dash_dd_search",
+            )
+
+        _targets = []
+        if _dd_search.strip():
+            _matches = [
+                c for c in _all_dash_custs
+                if _dd_search.strip().lower() in c.lower()
+            ]
+            if _matches:
+                _targets = st.multiselect(
+                    "Matching customers (multi-select)",
+                    _matches, key="dash_dd_match",
+                )
+            else:
+                st.info("No matching customers.")
+        elif _dd_cust:
+            _targets = [_dd_cust]
+
+        if _targets:
+            _dk, _dm, _dcat = build_customer_detail(dash_df, _targets)
+            if _dk:
+                # Prepare FCST data for selected customers
+                _blended_chart_df = pd.DataFrame()
+                _fy_forecast_revenue = 0
+                _fy_forecast_gp = 0
+                _fy_budget_revenue = 0
+                _budget_achievement_pct = 0
+                _fcst_filtered = pd.DataFrame()
+                if _do_fcst and not _fcst_raw.empty:
+                    _fcst_filtered = _fcst_raw[_fcst_raw["Customer"].isin(_targets)].copy()
+                    if not _fcst_filtered.empty:
+                        _actual_df = dash_df[dash_df["Customer Name"].isin(_targets)].rename(
+                            columns={"Customer Name": "Customer"}
+                        ).copy()
+                        _actual_df["Month"] = _actual_df["Ship Date"].dt.month
+                        _blended_df = fcst_loader.blend_actual_fcst(
+                            _actual_df, _fcst_filtered, _current_month
+                        )
+                        _blended_monthly = fcst_loader.agg_blended_monthly(_blended_df)
+                        _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_filtered)
+                        _blended_chart_df = pd.concat([_blended_monthly, _budget_monthly], ignore_index=True)
+                        # FY Forecast KPIs
+                        _fy_forecast_revenue = _blended_df["AMT"].sum()
+                        _fy_forecast_gp = _blended_df["GP"].sum()
+                        _fy_budget_revenue = _budget_monthly["Revenue"].sum() if not _budget_monthly.empty else 0
+                        # YTD Actual Revenue (up to current month)
+                        _ytd_actual_revenue = _actual_df[
+                            _actual_df["Ship Date"].dt.month <= _current_month
+                        ]["SALES Total AMT"].sum()
+                        _budget_achievement_pct = (
+                            _ytd_actual_revenue / _fy_budget_revenue * 100
+                        ) if _fy_budget_revenue else 0
+
+                _label = (
+                    ", ".join(_targets)
+                    if len(_targets) <= 3
+                    else f"{_targets[0]} + {len(_targets)-1} others"
+                )
+                st.markdown(f"### {_label}")
+                with st.container(border=True):
+                    _dkc1, _dkc2, _dkc3, _dkc4 = st.columns(4)
+                    _dkc1.metric("Revenue (TWD)", fmt_num(_dk['revenue']))
+                    _dkc2.metric("Gross Profit (TWD)", fmt_num(_dk['gp']))
+                    _dkc3.metric("GP Margin", f"{_dk['gp_pct']:.1f}%")
+                    _dkc4.metric("Units Sold", f"{_dk['qty']:,.0f}")
+                    _dkc4.caption("CDR + Tablet only")
+
+                # FY Forecast KPIs row
+                if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
+                    with st.container(border=True):
+                        st.markdown("**FY Forecast KPIs**")
+                        _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
+                        _fkc1.metric("FY Forecast Revenue (TWD)", fmt_num(_fy_forecast_revenue))
+                        _fkc2.metric("FY Forecast Gross Profit (TWD)", fmt_num(_fy_forecast_gp))
+                        _fkc3.metric("Budget Achievement", f"{_budget_achievement_pct:.1f}%")
+                        _fkc4.metric("FY Budget Revenue (TWD)", fmt_num(_fy_budget_revenue))
+
+                if not _dm.empty and not _dcat.empty:
+                    _ddc1, _ddc2 = st.columns(2)
+                    with _ddc1:
+                        if not _blended_chart_df.empty:
+                            st.markdown("**📈 Monthly Revenue (Actual + Forecast + Budget)**")
+                            st.altair_chart(
+                                chart_revenue_trend_blended(_blended_chart_df),
+                                use_container_width=True,
+                            )
+                        else:
+                            st.markdown("**📈 Monthly Revenue**")
+                            st.altair_chart(
+                                chart_customer_monthly(_dm),
+                                use_container_width=True,
+                            )
+                    with _ddc2:
+                        st.markdown("**🍩 Category Breakdown**")
+                        st.altair_chart(
+                            chart_customer_cat_donut(_dcat),
+                            use_container_width=True,
+                        )
+
+                # QTY by Category grouped bar
+                _qty_cat = build_customer_monthly_qty_by_cat(
+                    dash_df[dash_df["Customer Name"].isin(_targets)]
+                )
+                if not _qty_cat.empty:
+                    st.markdown("**📦 Monthly QTY by Category**")
+                    st.altair_chart(
+                        chart_customer_qty_by_cat(_qty_cat),
+                        use_container_width=True,
+                    )
+
+                if not _dm.empty:
+                    st.markdown("**📋 Monthly Detail**")
+                    st.dataframe(
+                        _dm.style.format({
+                            "Revenue": "{:,.0f}", "GP": "{:,.0f}",
+                            "GP%": "{:.1f}", "QTY": "{:,.0f}",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+
+                # Part Number detail (CDR + Tablet)
+                _pn = build_pn_detail(
+                    dash_df[dash_df["Customer Name"].isin(_targets)],
+                    has_shipping,
+                )
+                if not _pn.empty:
+                    st.markdown("**📦 Part Number Detail (CDR + Tablet)**")
+                    _pn_fmt = {"QTY": "{:,.0f}"}
+                    if "Latest UP" in _pn.columns:
+                        _pn_fmt["Latest UP"] = "{:,.2f}"
+                    st.dataframe(
+                        _pn.style.format(_pn_fmt),
+                        use_container_width=True, hide_index=True,
+                    )
+            else:
+                st.info("No data found for selected customer(s).")
