@@ -19,6 +19,7 @@ import re
 import string
 import pandas as pd
 import numpy as np
+import streamlit as st
 from pathlib import Path
 from typing import Optional
 
@@ -147,8 +148,8 @@ def find_latest_fcst_file(data_dir: str) -> Optional[str]:
     return max(xlsx_files, key=os.path.getmtime)
 
 
+@st.cache_data(ttl=300)
 def load_fcst(data_dir: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
-    clear_unmatched_customers()
     filepath = find_latest_fcst_file(data_dir)
     if filepath is None:
         return pd.DataFrame()

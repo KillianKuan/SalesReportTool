@@ -688,6 +688,7 @@ with main_tab3:
     if _do_fcst:
         try:
             _sheet_arg = None if _fcst_sheet == "All Sheets" else _fcst_sheet
+            fcst_loader.clear_unmatched_customers()
             _fcst_raw = fcst_loader.get_fcst_for_dashboard(
                 str(DATA_DIR), customer=None, sheet_name=_sheet_arg
             )
