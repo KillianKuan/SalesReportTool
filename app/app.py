@@ -1050,6 +1050,31 @@ with main_tab3:
                     else f"{_targets[0]} + {len(_targets)-1} others"
                 )
                 st.markdown(f"### {_label}")
+
+                # FY Forecast KPIs row
+                if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
+                    with st.container(border=True):
+                        st.markdown("**FY Forecast KPIs**")
+                        _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
+                        _rev_diff = _fy_forecast_revenue - _fy_budget_revenue
+                        _fkc1.metric(
+                            "FY Forecast Revenue (TWD)", fmt_num(_fy_forecast_revenue),
+                            delta=('+' if _rev_diff >= 0 else '') + fmt_num(_rev_diff),
+                            delta_color="normal",
+                        )
+                        _fkc2.metric("FY Forecast Gross Profit (TWD)", fmt_num(_fy_forecast_gp))
+                        _fkc3.metric(
+                            "Budget Achievement", f"{_budget_achievement_pct:.1f}%",
+                            delta=f"{_budget_achievement_pct - 100:+.1f}%",
+                            delta_color="normal",
+                        )
+                        _ytd_diff = _ytd_actual_revenue - _fy_budget_revenue
+                        _fkc4.metric(
+                            "FY Budget Revenue (TWD)", fmt_num(_fy_budget_revenue),
+                            delta=('+' if _ytd_diff >= 0 else '') + fmt_num(_ytd_diff),
+                            delta_color="normal",
+                        )
+
                 with st.container(border=True):
                     _dkc1, _dkc2, _dkc3, _dkc4 = st.columns(4)
                     _dkc1.metric("Revenue (TWD)", fmt_num(_dk['revenue']))
@@ -1057,16 +1082,6 @@ with main_tab3:
                     _dkc3.metric("GP Margin", f"{_dk['gp_pct']:.1f}%")
                     _dkc4.metric("Units Sold", f"{_dk['qty']:,.0f}")
                     _dkc4.caption("CDR + Tablet only")
-
-                # FY Forecast KPIs row
-                if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
-                    with st.container(border=True):
-                        st.markdown("**FY Forecast KPIs**")
-                        _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
-                        _fkc1.metric("FY Forecast Revenue (TWD)", fmt_num(_fy_forecast_revenue))
-                        _fkc2.metric("FY Forecast Gross Profit (TWD)", fmt_num(_fy_forecast_gp))
-                        _fkc3.metric("Budget Achievement", f"{_budget_achievement_pct:.1f}%")
-                        _fkc4.metric("FY Budget Revenue (TWD)", fmt_num(_fy_budget_revenue))
 
                 if not _dm.empty and not _dcat.empty:
                     _ddc1, _ddc2 = st.columns(2)
