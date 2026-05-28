@@ -33,21 +33,21 @@ DES_RULES = {
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR.parent / "data"
+HISTORICAL_DIR = DATA_DIR / "Over the Years"
+CURRENT_YEAR_DIR = DATA_DIR / "Current Year"
+HISTORICAL_CSV = HISTORICAL_DIR / "historical.csv"
 OVERRIDES_FILE = str(APP_DIR / "overrides.json")
 
 
 # ── Data folder scanning ─────────────────────────────────────────
-def scan_data_folders() -> dict[int, Path]:
-    """Return {year: folder_path} for all valid year-named subdirs in DATA_DIR."""
-    folders = {}
-    if not DATA_DIR.exists():
-        return folders
-    for entry in sorted(DATA_DIR.iterdir()):
-        if entry.is_dir() and entry.name.isdigit():
-            year = int(entry.name)
-            if 2019 <= year <= 2099:
-                folders[year] = entry
-    return folders
+def scan_current_year_folder() -> Path | None:
+    """Return the most-recently-modified .xlsx in Current Year/, or None."""
+    if not CURRENT_YEAR_DIR.exists():
+        return None
+    xlsx_files = list(CURRENT_YEAR_DIR.glob("*.xlsx"))
+    if not xlsx_files:
+        return None
+    return max(xlsx_files, key=lambda f: f.stat().st_mtime)
 
 
 def get_latest_xlsx(year_dir: Path) -> Path | None:
@@ -208,6 +208,106 @@ def load_single_file(file_path: str, rules_key):
             df.loc[to_fill[to_fill].index, "Category"] = cat_name
 
     # Apply customer-name override (takes priority over Category/DES results)
+    df.loc[customer_cat.notna(), "Category"] = customer_cat[customer_cat.notna()]
+
+    df["Category"] = df["Category"].fillna("Others")
+    for col in ["QTY", "SALES Total AMT", GP_COL]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    if has_shipping:
+        for col in ["UP", "TP(USD)"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        df["Currency"] = df["Currency"].astype(str).str.strip()
+    df["Customer Name"] = df["Customer Name"].astype(str).str.strip()
+    df["Customer Name"] = df["Customer Name"].apply(normalize_customer_name)
+    if has_sp:
+        df["SALE_Person"] = df["SALE_Person"].astype(str).str.strip()
+        df["SALE_Person"] = df["SALE_Person"].apply(normalize_sales_person)
+    df = df[~df["Customer Name"].isin(["nan", "NaN", ""])]
+    df["Part Number"] = (
+        df["Part Number"].astype(str).str.strip()
+        .replace({"None": "", "nan": "", "NaN": ""})
+    )
+    return df, nat_count, None, ambiguous, has_des, has_shipping
+
+
+@st.cache_data
+def load_historical_csv(file_path: str, rules_key):
+    """Load data/Over the Years/historical.csv.
+    Applies the same cleaning pipeline as load_single_file().
+    Returns (df, nat_count, err, ambiguous, has_des, has_shipping).
+    """
+    try:
+        raw = pd.read_csv(file_path, encoding="utf-8-sig", low_memory=False)
+    except Exception as e:
+        return None, 0, f"Cannot read historical.csv: {e}", [], False, False
+
+    missing = [c for c in REQUIRED_COLS if c not in raw.columns]
+    if missing:
+        return (None, 0,
+                f"historical.csv: Missing columns: {missing}",
+                [], False, False)
+
+    has_des = "DES" in raw.columns
+    has_sp = "SALE_Person" in raw.columns
+    has_shipping = all(c in raw.columns for c in SHIPPING_COLS)
+
+    use_cols = (REQUIRED_COLS
+                + (["DES"] if has_des else [])
+                + (["SALE_Person"] if has_sp else [])
+                + (SHIPPING_COLS if has_shipping else []))
+    df = raw[use_cols].copy()
+    df["Ship Date"] = pd.to_datetime(
+        df["Ship Date"].astype(str).str.strip(), errors="coerce"
+    )
+    nat_count = int(df["Ship Date"].isna().sum())
+    df = df.dropna(subset=["Ship Date"])
+    df["Month"] = df["Ship Date"].dt.strftime("%Y-%m")
+    df["Category"] = df["Category"].astype(str).str.strip()
+    if has_des:
+        df["DES"] = df["DES"].astype(str).str.strip()
+    if has_sp:
+        df["SALE_Person"] = df["SALE_Person"].astype(str).str.strip()
+
+    ambiguous = []
+    orig_cat = df["Category"].copy()
+
+    CUSTOMER_CATEGORY_MAP = {
+        "SIGNIFY": "Signify",
+    }
+    cust_upper = df["Customer Name"].str.strip().str.upper()
+    customer_aliases = _load_aliases("customer")
+    cust_upper = cust_upper.map(customer_aliases).fillna(cust_upper)
+    customer_cat = cust_upper.map(CUSTOMER_CATEGORY_MAP)
+
+    cat_upper = df["Category"].str.upper().str.split().str.join(" ")
+    df["Category"] = cat_upper.map(_VALID_CAT_MAP)
+
+    needs_des = df["Category"].isna()
+    if has_des and needs_des.any():
+        des_lower = df.loc[needs_des, "DES"].str.lower()
+        match_cats = {}
+        for cat_name, keywords in DES_RULES.items():
+            pattern = "|".join(re.escape(k) for k in keywords)
+            match_cats[cat_name] = des_lower.str.contains(pattern, na=False)
+
+        match_count = sum(m.astype(int) for m in match_cats.values())
+        ambiguous_mask = match_count > 1
+        if ambiguous_mask.any():
+            for idx in ambiguous_mask[ambiguous_mask].index:
+                matched_names = [c for c, m in match_cats.items() if m[idx]]
+                ambiguous.append({
+                    "Part Number": df.at[idx, "Part Number"],
+                    "DES": df.at[idx, "DES"],
+                    "Original Category": orig_cat[idx],
+                    "Matched": " / ".join(matched_names),
+                    "Assigned": matched_names[0],
+                })
+
+        for cat_name, matched in match_cats.items():
+            still_na = df.loc[needs_des, "Category"].isna()
+            to_fill = still_na & matched
+            df.loc[to_fill[to_fill].index, "Category"] = cat_name
+
     df.loc[customer_cat.notna(), "Category"] = customer_cat[customer_cat.notna()]
 
     df["Category"] = df["Category"].fillna("Others")

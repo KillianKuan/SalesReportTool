@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fcst_loader
 
 from utils import (
-    DATA_DIR, CAT_ORDER, _rules_key,
-    scan_data_folders, get_latest_xlsx,
-    load_single_file, load_overrides, save_overrides,
+    DATA_DIR, HISTORICAL_CSV, CURRENT_YEAR_DIR, SHIPPING_COLS, CAT_ORDER, _rules_key,
+    scan_current_year_folder,
+    load_single_file, load_historical_csv, load_overrides, save_overrides,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
     sorted_cats, fmt, show_bycat,
@@ -87,20 +87,56 @@ def inject_heartbeat() -> None:
 
 inject_heartbeat()
 
-# ?? 0. Year selection (sidebar) ??????????????????????????????????
-year_folders = scan_data_folders()
+# ?? 0. Load data sources (cached) ???????????????????????????????????????????
+current_year = datetime.now().year
 
-if not year_folders:
+_cur_xlsx = scan_current_year_folder()
+
+if HISTORICAL_CSV.exists():
+    _hist_df, _hist_nat, _hist_err, _hist_amb, _hist_hd, _hist_hs = \
+        load_historical_csv(str(HISTORICAL_CSV), _rules_key())
+else:
+    _hist_df, _hist_nat, _hist_err, _hist_amb, _hist_hd, _hist_hs = \
+        None, 0, None, [], False, False
+
+if _cur_xlsx:
+    _cur_df, _cur_nat, _cur_err, _cur_amb, _cur_hd, _cur_hs = \
+        load_single_file(str(_cur_xlsx), _rules_key())
+else:
+    _cur_df, _cur_nat, _cur_err, _cur_amb, _cur_hd, _cur_hs = \
+        None, 0, None, [], False, False
+
+if _hist_err:
+    st.error(f"❌ {_hist_err}")
+if _cur_err:
+    st.error(f"❌ {_cur_err}")
+
+if _hist_df is None and _cur_df is None:
     st.error(
-        f"Data folder not found. Please create year folders and place .xlsx files in:\n\n"
-        f"`{DATA_DIR}`\n\n"
-        f"Example: `data/2024/sales_2024.xlsx`"
+        f"No data found. Please place data files in:\n\n"
+        f"- `{DATA_DIR / 'Over the Years' / 'historical.csv'}` — past years"
+        f" (run `scripts/merge_historical.py`)\n"
+        f"- `{DATA_DIR / 'Current Year' / '*.xlsx'}` — current year xlsx (Actual sheet)"
     )
     st.stop()
 
-available_years = sorted(year_folders.keys(), reverse=True)
-current_year = datetime.now().year
-default_years = [current_year] if current_year in available_years else [available_years[-1]]
+_all_parts = [d for d in [_hist_df, _cur_df] if d is not None]
+_combined_df = pd.concat(_all_parts, ignore_index=True)
+_combined_df = _combined_df[~_combined_df["Customer Name"].isin(EXCLUDED_CUSTOMERS)]
+
+total_nat = (_hist_nat or 0) + (_cur_nat or 0)
+all_ambiguous = list(_hist_amb or []) + list(_cur_amb or [])
+
+# ?? 1. Year selection (sidebar) ??????????????????????????????????
+available_years = sorted(
+    _combined_df["Ship Date"].dt.year.dropna().astype(int).unique().tolist(),
+    reverse=True,
+)
+if not available_years:
+    st.error("No valid Ship Date values found in data.")
+    st.stop()
+
+default_years = [current_year] if current_year in available_years else [available_years[0]]
 
 st.sidebar.header("📅 Year Selection")
 selected_years = st.sidebar.multiselect(
@@ -114,50 +150,14 @@ if not selected_years:
     st.info("Please select at least one year from the sidebar.")
     st.stop()
 
-file_map: dict[int, Path] = {}
-for yr in selected_years:
-    f = get_latest_xlsx(year_folders[yr])
-    if f:
-        file_map[yr] = f
+df = _combined_df[_combined_df["Ship Date"].dt.year.isin(selected_years)].copy()
 
-missing_years = [yr for yr in selected_years if yr not in file_map]
-if missing_years:
-    st.warning(f"⚠️ No .xlsx files found in year folders: {missing_years}")
-if not file_map:
-    st.error("No usable .xlsx files found for any of the selected years.")
+if df.empty:
+    st.error("No data for the selected year(s).")
     st.stop()
 
-# ?? 1. Load & merge ???????????????????????????????????????????
-all_dfs = []
-total_nat = 0
-all_ambiguous = []
-global_has_des = True
-global_has_shipping = True
-
-for yr in sorted(file_map):
-    fp = file_map[yr]
-    df_yr, nat_yr, err_yr, amb_yr, hd_yr, hs_yr = load_single_file(
-        str(fp), _rules_key()
-    )
-    if err_yr:
-        st.error(f"❌ {err_yr}")
-        continue
-    all_dfs.append(df_yr)
-    total_nat += nat_yr
-    all_ambiguous.extend(amb_yr)
-    if not hd_yr:
-        global_has_des = False
-    if not hs_yr:
-        global_has_shipping = False
-
-if not all_dfs:
-    st.error("No files were loaded successfully.")
-    st.stop()
-
-df = pd.concat(all_dfs, ignore_index=True)
-df = df[~df["Customer Name"].isin(EXCLUDED_CUSTOMERS)]
-has_des = global_has_des
-has_shipping = global_has_shipping
+has_des = "DES" in df.columns
+has_shipping = all(c in df.columns for c in SHIPPING_COLS)
 
 # ?? Overrides ????????????????????????????????????????????????????
 if "others_overrides" not in st.session_state:
@@ -219,12 +219,19 @@ _fcst_sheet = st.sidebar.radio(
 )
 
 with st.sidebar.expander("ℹ️ System Info", expanded=False):
-    st.markdown(f"**Loaded {len(df):,} rows** ({len(file_map)} year(s))")
-    for yr in sorted(file_map):
-        f = file_map[yr]
-        mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    st.markdown(f"**Loaded {len(df):,} rows** across {len(selected_years)} year(s)")
+    if HISTORICAL_CSV.exists() and _hist_df is not None:
+        _hmtime = datetime.fromtimestamp(HISTORICAL_CSV.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        _hyears = sorted(_hist_df["Ship Date"].dt.year.dropna().astype(int).unique().tolist())
+        _hyears_str = ", ".join(map(str, _hyears)) if _hyears else "—"
         st.markdown(
-            f"**{yr}**: `{f.name}`  \n<small>Modified: {mtime}</small>",
+            f"**Historical**: `historical.csv` ({_hyears_str})  \n<small>Modified: {_hmtime}</small>",
+            unsafe_allow_html=True,
+        )
+    if _cur_xlsx and _cur_df is not None:
+        _cmtime = datetime.fromtimestamp(_cur_xlsx.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        st.markdown(
+            f"**{current_year}**: `{_cur_xlsx.name}`  \n<small>Modified: {_cmtime}</small>",
             unsafe_allow_html=True,
         )
     if not has_des:
@@ -250,19 +257,9 @@ with st.sidebar.expander("ℹ️ System Info", expanded=False):
 yoy_df = None
 _max_sel_year = max(selected_years)
 _yoy_year = _max_sel_year - 1
-if _yoy_year in year_folders:
-    if _yoy_year in selected_years:
-        yoy_df = df[df["Ship Date"].dt.year == _yoy_year].copy()
-    else:
-        _yoy_file = get_latest_xlsx(year_folders[_yoy_year])
-        if _yoy_file:
-            _yoy_raw, _, _yoy_err, _, _, _ = load_single_file(
-                str(_yoy_file), _rules_key()
-            )
-            if _yoy_raw is not None:
-                yoy_df = _yoy_raw[
-                    ~_yoy_raw["Customer Name"].isin(EXCLUDED_CUSTOMERS)
-                ]
+_yoy_data = _combined_df[_combined_df["Ship Date"].dt.year == _yoy_year]
+if not _yoy_data.empty:
+    yoy_df = _yoy_data.copy()
 
 # ??????????????????????????????????????????????????????????????
 # MAIN TABS
