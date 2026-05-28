@@ -2,7 +2,7 @@
 
 Streamlit-based sales performance analysis tool with automatic data classification and forecast integration.
 
-**Version:** 3.5 | **Build Date:** April 2026
+**Version:** 3.6 | **Build Date:** May 2026
 
 ---
 
@@ -32,12 +32,21 @@ SalesReportTool/
 │   ├── aliases.json        # Name alias mappings
 │   └── overrides.json      # Category overrides (auto-generated)
 ├── data/
-│   ├── 2024/  2025/  2026/ # Shipping Record xlsx files
+│   ├── Over the Years/
+│   │   └── historical.csv  # All past years merged (run scripts/merge_historical.py)
+│   ├── Current Year/
+│   │   └── *.xlsx          # Current-year Shipping Record (Actual sheet)
 │   └── FCST/               # Latest FCST xlsx (auto-selected by mtime)
+├── scripts/
+│   └── merge_historical.py # One-time migration: year folders → historical.csv
 ├── launcher.py
 ├── build.bat
 └── requirements.txt
 ```
+
+> **Migrating from year-based folders:** run `python scripts/merge_historical.py` once to merge
+> `data/2024/`, `data/2025/`, … into `data/Over the Years/historical.csv`, then move
+> the current-year xlsx into `data/Current Year/`.
 
 ---
 
@@ -136,8 +145,9 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 | Issue | Fix |
 |-------|-----|
-| "Data folder not found" | Create `data/{YEAR}/` and place `.xlsx` files inside |
+| "No data found" on startup | Place `historical.csv` in `data/Over the Years/` and/or xlsx in `data/Current Year/` |
 | Missing columns error | Check required column names match exactly |
+| Historical years missing from selector | Re-run `scripts/merge_historical.py` to regenerate `historical.csv` |
 | FCST not appearing | Ensure current year selected + `.xlsx` exists in `data/FCST/` |
 | FCST customer warnings | Add mapping to `aliases.json` → `fcst_customer` section |
 | Name not normalizing | Check alias key is in normalized form; restart app after editing |
@@ -146,6 +156,12 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 ---
 
 ## Change Log
+
+### v3.6 (May 2026)
+- Data folder restructure: year-based `data/{year}/` replaced with `data/Over the Years/historical.csv` (all past years) + `data/Current Year/*.xlsx` (current year)
+- `scripts/merge_historical.py`: one-time migration helper to merge year folders into `historical.csv` (UTF-8-BOM)
+- Year selector now derived from Ship Date values in loaded data; historical years from CSV are automatically available
+- YoY comparison simplified: both years come from a single combined DataFrame
 
 ### v3.5 (April 2026)
 - Budget integration: `agg_budget_monthly()`, Budget Achievement% KPI cards, dashed-gray Budget line in charts
@@ -168,4 +184,4 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 ---
 
-*For internal use. Last Updated: 2026-04-13*
+*For internal use. Last Updated: 2026-05-28*
