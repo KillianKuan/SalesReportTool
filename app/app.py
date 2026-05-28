@@ -38,7 +38,7 @@ from charts import (
     chart_category_donut, chart_category_stacked, chart_ai_sw_revenue_trend,
     chart_top_customers_bar, chart_customer_monthly, chart_customer_cat_donut,
     chart_customer_qty_by_cat,
-    chart_revenue_trend_blended, chart_gp_trend_blended,
+    chart_revenue_trend_blended, chart_gp_trend_blended, chart_qty_trend_blended,
 )
 
 st.set_page_config(
@@ -839,17 +839,37 @@ with main_tab3:
             )
 
         with _tr1:
-            st.markdown("**📈 Monthly Revenue Trend**")
-            if not _chart_data_blended.empty:
-                st.altair_chart(
-                    chart_revenue_trend_blended(_chart_data_blended),
-                    use_container_width=True,
-                )
+            _dash_metric = st.radio(
+                "Metric",
+                ["Revenue", "QTY"],
+                horizontal=True,
+                key="dash_trend_metric",
+                label_visibility="collapsed",
+            )
+            if _dash_metric == "QTY":
+                st.markdown("**📦 Monthly QTY Trend**")
+                if not _blended_monthly.empty:
+                    st.altair_chart(
+                        chart_qty_trend_blended(_blended_monthly),
+                        use_container_width=True,
+                    )
+                else:
+                    st.altair_chart(
+                        chart_qty_by_month(dash_df),
+                        use_container_width=True,
+                    )
             else:
-                st.altair_chart(
-                    chart_revenue_trend(_trend, multi_year=_multi_yr),
-                    use_container_width=True,
-                )
+                st.markdown("**📈 Monthly Revenue Trend**")
+                if not _chart_data_blended.empty:
+                    st.altair_chart(
+                        chart_revenue_trend_blended(_chart_data_blended),
+                        use_container_width=True,
+                    )
+                else:
+                    st.altair_chart(
+                        chart_revenue_trend(_trend, multi_year=_multi_yr),
+                        use_container_width=True,
+                    )
         with _tr2:
             st.markdown("**📉 Monthly GP & GP% Trend**")
             if not _chart_data_blended.empty:

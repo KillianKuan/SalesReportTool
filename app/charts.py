@@ -342,6 +342,44 @@ def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerCh
     return alt.layer(line)
 
 
+def chart_qty_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
+    """Monthly QTY line chart: Actual = solid blue, Forecast = dashed green. Budget excluded.
+
+    Input: output of fcst_loader.agg_blended_monthly().
+    Columns required: Period, MonthIndex, Source, QTY.
+    """
+    df = blended_monthly_df[blended_monthly_df["Source"] != "Budget"].copy()
+    line = (
+        alt.Chart(df)
+        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .encode(
+            x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
+            y=alt.Y("QTY:Q", title="QTY", axis=alt.Axis(format=",.0f")),
+            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
+                            legend=alt.Legend(title="")),
+            strokeDash=alt.StrokeDash("Source:N", scale=_SOURCE_DASH,
+                                      legend=None),
+            tooltip=[
+                "Period:N", "Source:N",
+                alt.Tooltip("QTY:Q", format=","),
+            ],
+        )
+    )
+    actual_max = (
+        df[df["Source"] == "Actual"]["MonthIndex"].max()
+        if "Actual" in df["Source"].values else None
+    )
+    if actual_max is not None and int(actual_max) < 12:
+        boundary_period = _MONTHS_ORDER[int(actual_max)]
+        rule = (
+            alt.Chart({"values": [{"Period": boundary_period}]})
+            .mark_rule(color="#aaaaaa", strokeDash=[4, 2], opacity=0.6, size=1)
+            .encode(x=alt.X("Period:N", sort=_MONTHS_ORDER))
+        )
+        return alt.layer(line, rule)
+    return alt.layer(line)
+
+
 def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
     """GP bar + GP% line dual-axis chart with Actual/Forecast/Budget color coding.
 
