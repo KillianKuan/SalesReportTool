@@ -230,6 +230,22 @@ def load_single_file(file_path: str, rules_key):
     return df, nat_count, None, ambiguous, has_des, has_shipping
 
 
+def _try_read_csv_with_encodings(file_path: str, encodings):
+    last_exc = None
+    for encoding in encodings:
+        try:
+            return pd.read_csv(file_path, encoding=encoding, low_memory=False)
+        except UnicodeDecodeError as e:
+            last_exc = e
+            continue
+        except Exception as e:
+            last_exc = e
+            break
+    raise last_exc if last_exc is not None else ValueError(
+        f"Unable to read CSV file: {file_path}"
+    )
+
+
 @st.cache_data
 def load_historical_csv(file_path: str, rules_key):
     """Load data/Over the Years/historical.csv.
@@ -237,7 +253,10 @@ def load_historical_csv(file_path: str, rules_key):
     Returns (df, nat_count, err, ambiguous, has_des, has_shipping).
     """
     try:
-        raw = pd.read_csv(file_path, encoding="utf-8-sig", low_memory=False)
+        raw = _try_read_csv_with_encodings(
+            file_path,
+            ["utf-8-sig", "utf-8", "cp950", "cp936", "latin1"],
+        )
     except Exception as e:
         return None, 0, f"Cannot read historical.csv: {e}", [], False, False
 
@@ -409,6 +428,87 @@ def to_wide_one_cat(long_df, cat, all_months):
     return pd.concat([result, gp_row], ignore_index=True)
 
 
+def to_fcst_wide_summary(fcst_df, selected_customers, month_cols):
+    """Convert FCST DataFrame to wide summary format for appending to report.
+
+    fcst_df: output of get_fcst_for_dashboard()
+    selected_customers: list of customer names to filter
+    month_cols: list of month column names from actual summary (e.g., ['2024-01', '2024-02', ...])
+    """
+    if fcst_df.empty:
+        return pd.DataFrame()
+
+    # Filter for selected customers (case-insensitive)
+    fcst_filtered = fcst_df[fcst_df["Customer"].str.upper().isin([c.upper() for c in selected_customers])].copy()
+    if fcst_filtered.empty:
+        return pd.DataFrame()
+
+    # Aggregate by Period (month name like 'Jan', 'Feb')
+    agg = fcst_filtered.groupby("Period").agg({
+        "QTY_Forecast": "sum",
+        "AMT_Forecast": "sum",
+        "GP_Forecast": "sum"
+    }).reset_index()
+
+    # Metric mapping
+    metric_to_col = {
+        "FCST QTY": "QTY_Forecast",
+        "FCST AMT(TWD)": "AMT_Forecast",
+        "FCST GP(TWD)": "GP_Forecast"
+    }
+
+    # Create the wide DataFrame with same columns as wide_summary
+    data = []
+    for metric in ["FCST QTY", "FCST AMT(TWD)", "FCST GP(TWD)"]:
+        row = {"Metric": metric}
+        col_name = metric_to_col[metric]
+        for col in month_cols:
+            if col == "Total":
+                # Calculate total across all months
+                total = 0
+                for m_col in month_cols:
+                    if m_col != "Total" and not m_col.endswith(" Total"):
+                        try:
+                            dt = pd.to_datetime(m_col)
+                            period = dt.strftime("%b")
+                            if period in agg["Period"].values:
+                                val = agg.loc[agg["Period"] == period, col_name].values[0]
+                                total += val
+                        except:
+                            pass
+                row[col] = total
+            elif col.endswith(" Total"):
+                # Year total
+                year = col.split()[0]
+                year_total = 0
+                for m_col in month_cols:
+                    if m_col.startswith(year + "-"):
+                        try:
+                            dt = pd.to_datetime(m_col)
+                            period = dt.strftime("%b")
+                            if period in agg["Period"].values:
+                                val = agg.loc[agg["Period"] == period, col_name].values[0]
+                                year_total += val
+                        except:
+                            pass
+                row[col] = year_total
+            else:
+                # Month column
+                try:
+                    dt = pd.to_datetime(col)
+                    period = dt.strftime("%b")
+                    if period in agg["Period"].values:
+                        val = agg.loc[agg["Period"] == period, col_name].values[0]
+                    else:
+                        val = 0
+                except:
+                    val = 0
+                row[col] = val
+        data.append(row)
+
+    return pd.DataFrame(data)
+
+
 def sorted_cats(long_bycat):
     present = long_bycat["Category"].unique().tolist()
     ordered = [c for c in CAT_ORDER if c in present]
@@ -418,10 +518,21 @@ def sorted_cats(long_bycat):
 
 def fmt(df_display):
     nc = [c for c in df_display.columns if c != df_display.columns[0]]
-    num_idx = df_display.index[df_display.iloc[:, 0] != "GP%"].tolist()
-    return df_display.style.format(
+    num_idx = df_display.index[
+        (df_display.iloc[:, 0] != "GP%") &
+        (df_display.iloc[:, 0] != "---") &
+        (~df_display.iloc[:, 0].str.startswith("FCST", na=False))
+    ].tolist()
+    styled = df_display.style.format(
         "{:,.0f}", subset=pd.IndexSlice[num_idx, nc], na_rep="0"
     )
+    # For FCST rows, format as numbers
+    fcst_idx = df_display.index[df_display.iloc[:, 0].str.startswith("FCST", na=False)].tolist()
+    if fcst_idx:
+        styled = styled.format(
+            "{:,.0f}", subset=pd.IndexSlice[fcst_idx, nc], na_rep="0"
+        )
+    return styled
 
 
 def fmt_num(n) -> str:

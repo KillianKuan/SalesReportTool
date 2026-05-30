@@ -26,9 +26,8 @@ REQUIRED_COLS = [
 OPTIONAL_COLS = ["DES", "SALE_Person", "Currency", "UP", "TP(USD)"]
 
 
-def _find_latest_xlsx(year_dir: Path) -> Path | None:
-    files = list(year_dir.glob("*.xlsx"))
-    return max(files, key=lambda f: f.stat().st_mtime) if files else None
+def _get_all_xlsx(year_dir: Path) -> list[Path]:
+    return sorted(year_dir.glob("*.xlsx"), key=lambda p: p.name)
 
 
 def main() -> None:
@@ -41,7 +40,6 @@ def main() -> None:
             entry for entry in DATA_DIR.iterdir()
             if entry.is_dir()
             and entry.name.isdigit()
-            and 2019 <= int(entry.name) <= 2099
             and int(entry.name) != CURRENT_YEAR
         ),
         key=lambda p: int(p.name),
@@ -52,36 +50,47 @@ def main() -> None:
         sys.exit(0)
 
     frames = []
+    seen_optional = set()
     for d in year_dirs:
-        xlsx = _find_latest_xlsx(d)
-        if xlsx is None:
+        xlsx_files = _get_all_xlsx(d)
+        if not xlsx_files:
             print(f"  SKIP {d.name}/: no .xlsx file found")
             continue
-        try:
+
+        for xlsx in xlsx_files:
             try:
-                xl = pd.ExcelFile(xlsx, engine="calamine")
-            except ImportError:
-                xl = pd.ExcelFile(xlsx)
-        except Exception as e:
-            print(f"  SKIP {d.name}/{xlsx.name}: cannot open ({e})")
-            continue
-        if "Actual" not in xl.sheet_names:
-            print(f"  SKIP {d.name}/{xlsx.name}: 'Actual' sheet not found (got {xl.sheet_names})")
-            continue
-        raw = xl.parse("Actual")
-        missing = [c for c in REQUIRED_COLS if c not in raw.columns]
-        if missing:
-            print(f"  SKIP {d.name}/{xlsx.name}: missing required columns {missing}")
-            continue
-        use_cols = REQUIRED_COLS + [c for c in OPTIONAL_COLS if c in raw.columns]
-        frames.append(raw[use_cols].copy())
-        print(f"  OK   {d.name}/{xlsx.name}: {len(raw):,} rows")
+                try:
+                    xl = pd.ExcelFile(xlsx, engine="calamine")
+                except ImportError:
+                    xl = pd.ExcelFile(xlsx)
+            except Exception as e:
+                print(f"  SKIP {d.name}/{xlsx.name}: cannot open ({e})")
+                continue
+            if "Actual" not in xl.sheet_names:
+                print(f"  SKIP {d.name}/{xlsx.name}: 'Actual' sheet not found (got {xl.sheet_names})")
+                continue
+            raw = xl.parse("Actual")
+            missing = [c for c in REQUIRED_COLS if c not in raw.columns]
+            if missing:
+                print(f"  SKIP {d.name}/{xlsx.name}: missing required columns {missing}")
+                continue
+            use_cols = REQUIRED_COLS + [c for c in OPTIONAL_COLS if c in raw.columns]
+            frame = raw[use_cols].copy()
+            frames.append(frame)
+            seen_optional.update(col for col in OPTIONAL_COLS if col in frame.columns)
+            print(f"  OK   {d.name}/{xlsx.name}: {len(frame):,} rows")
 
     if not frames:
         print("No data to merge — output file not written.")
         sys.exit(0)
 
     merged = pd.concat(frames, ignore_index=True)
+    output_cols = REQUIRED_COLS + [col for col in OPTIONAL_COLS if col in seen_optional]
+    for col in OPTIONAL_COLS:
+        if col not in merged.columns:
+            merged[col] = pd.NA
+    merged = merged.loc[:, output_cols]
+
     out_dir = DATA_DIR / "Over the Years"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "historical.csv"

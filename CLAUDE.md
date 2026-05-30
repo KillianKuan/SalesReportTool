@@ -130,6 +130,14 @@ Dashboard 行為：
   key，避免 Excel 更新後 index 偏移。跨 session / 重啟保留。
 - **Cache busting**: DES_RULES 變更時透過 _rules_key() 自動使
   @st.cache_data 失效。
+- **launcher 架構（v3.6+）**: 父 process 持有 pystray system tray icon（主執行緒
+  blocking），子 process 執行 Streamlit（無 CREATE_NO_WINDOW，console 可見方便除錯）。
+  browser open + server ready 偵測在 daemon thread 執行。
+- **Single-instance 保護**: 啟動時檢查 `TEMP/salesreport.lock`（JSON 含 PID + port）。
+  若 PID 存活 → 開瀏覽器到已執行的 instance + sys.exit；若 PID 已死 → 刪除 stale lock。
+  atexit + SIGTERM/SIGINT handler 確保 lock 在正常/異常結束時都會清除。
+- **System tray**: pystray + Pillow；優先載入 assets/app.ico，fallback 為程式生成藍色圖示。
+  選單：Open Browser / Quit。啟動時顯示 notify 通知。
 - **--server.headless true**: launcher.py 控制開瀏覽器時機（偵測 port 就緒
   再開），不依賴 Streamlit 預設行為。
 - **更新 app.py 不需重新打包**: 直接替換 dist/SalesReportTool/app/ 下的檔案即可。

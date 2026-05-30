@@ -36,6 +36,9 @@ python -m PyInstaller ^
     --collect-data pydeck ^
     --collect-data packaging ^
     --hidden-import python_calamine ^
+    --hidden-import pystray ^
+    --hidden-import PIL ^
+    --collect-all pystray ^
     launcher.py
 if errorlevel 1 (
     echo.
