@@ -1,0 +1,91 @@
+name: Build Windows EXE
+
+# Development happens on macOS; end users run the packaged .exe on Windows.
+# PyInstaller cannot cross-compile, so the distributable Windows .exe is built
+# here on a Windows runner instead of locally.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Reuses the EXACT PyInstaller flags from build.bat. Keep both in sync.
+      - name: Build with PyInstaller
+        run: |
+          python -m PyInstaller `
+            --name SalesReportTool `
+            --onedir `
+            --noconsole `
+            --icon assets\app.ico `
+            --collect-all streamlit `
+            --copy-metadata streamlit `
+            --hidden-import streamlit.web.cli `
+            --hidden-import streamlit.web.bootstrap `
+            --hidden-import streamlit.runtime.scriptrunner `
+            --hidden-import streamlit.runtime.caching `
+            --hidden-import streamlit.runtime.secrets `
+            --hidden-import pkg_resources `
+            --collect-data altair `
+            --collect-data pydeck `
+            --collect-data packaging `
+            --hidden-import python_calamine `
+            --hidden-import pystray `
+            --hidden-import PIL `
+            --collect-all pystray `
+            launcher.py
+
+      - name: Verify build output
+        run: |
+          if (-Not (Test-Path "dist\SalesReportTool\SalesReportTool.exe")) {
+            Write-Error "Build failed: SalesReportTool.exe not found"
+            exit 1
+          }
+
+      # Same post-build copy steps as build.bat: bundle app/ and data/.
+      - name: Copy app/ and data/ into dist
+        run: |
+          xcopy /e /i /y app dist\SalesReportTool\app
+          if (Test-Path data) {
+            xcopy /e /i /y data dist\SalesReportTool\data
+          } else {
+            New-Item -ItemType Directory -Force -Path dist\SalesReportTool\data | Out-Null
+          }
+
+      - name: Zip dist/SalesReportTool
+        run: Compress-Archive -Path dist\SalesReportTool -DestinationPath SalesReportTool-windows.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SalesReportTool-windows
+          path: SalesReportTool-windows.zip
+
+      # On tag pushes (vX.Y.Z), attach the zip to the GitHub Release.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SalesReportTool-windows.zip
