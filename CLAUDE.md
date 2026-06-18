@@ -108,7 +108,7 @@ FCST 的 AMT / GP 是千元，`_parse_sheet()` 在建立 record 時自動 ×1,00
 
 Dashboard 行為：
 - KPI 列新增 **Budget Achievement%**（YTD Actual / FY Budget Revenue）與 **FY Budget Revenue**
-- 月趨勢圖將 Budget 以灰色虛線疊加在 Actual / Forecast 之上（`_SOURCE_COLOR` / `_SOURCE_DASH`）
+- 月越勢圖將 Budget 以灰色虛線疊加在 Actual / Forecast 之上（`_SOURCE_COLOR` / `_SOURCE_DASH`）
 - `chart_gp_trend_blended` 中 Budget bar 以低透明度 (0.3) 獨立渲染，不與 Actual/Forecast 疊加
 
 ### Customer Drill-Down FCST 整合
@@ -121,6 +121,32 @@ Dashboard 行為：
 ### 未匹配客戶警告位置
 `get_unmatched_customers()` 在 FCST 載入後由 Company Dashboard 呼叫，
 警告訊息直接顯示在 Dashboard 頁面頂部（非 sidebar）。
+
+---
+
+## 跨平台打包與發版（CI）
+
+開發環境為 macOS，但工具最終由同事在 Windows 執行。**PyInstaller 無法跨平台編譯**，所以要給同事用的
+Windows `.exe` 一律在 Windows runner 上透過 GitHub Actions 產生。
+
+### 關鍵檔案
+| 檔案 | 用途 |
+|------|------|
+| `.github/workflows/build-windows.yml` | CI：`windows-latest` + Python 3.11，用與 build.bat 相同的 PyInstaller flags 產生 `.exe` |
+| `build.bat` | Windows / VM 本地打包 fallback（未變動） |
+| `run.sh` | macOS/Linux 開發 server（`streamlit run app/app.py`） |
+| `build-mac.sh` | macOS/Linux 本地 smoke-test 打包（產 host-OS 執行檔，**非** Windows .exe） |
+
+### 發版流程（推薦）
+1. push 你的變更。
+2. 打 tag 並 push：`git tag v3.7.0 && git push origin v3.7.0`。
+3. **Build Windows EXE** workflow 在 `windows-latest` 上 build `.exe`，並自動將
+   `SalesReportTool-windows.zip` 附到對應的 GitHub Release。
+4. 同事從 Release 下載 zip → 解壓縮 → 雙擊 `SalesReportTool.exe`。
+
+也可從 **Actions** tab 手動觸發（`workflow_dispatch`），`.zip` 會以 workflow artifact 提供下載。
+
+> CI workflow 的 PyInstaller flags 與 `build.bat` 保持一致；修改打包參數時需兩邊同步更新。
 
 ---
 
@@ -168,8 +194,10 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 - 修改分類規則 → 編輯 `utils.py` 內的 `DES_RULES`，並同步更新 Notion 對照表
 - 新增 FCST 客戶 mapping → 編輯 `aliases.json` 的 "fcst_customer" section
 - 新增 FCST Sheet → `FCST_SHEETS` 加 entry + app.py sidebar radio 加選項
-- 新功能開發 → `py -m streamlit run app/app.py`
-- 出貨給使用者 → 執行 `build.bat` 重新打包
+- 新功能開發（macOS/Linux）→ `./run.sh`（或 `py -m streamlit run app/app.py`）
+- 出貨給使用者 → push `vX.Y.Z` tag，GitHub Actions（`windows-latest`）自動產生 `.exe` 並附到 GitHub Release；
+  本地 `build.bat`（Windows）為 fallback
+- 本地 smoke-test 打包（macOS/Linux）→ `./build-mac.sh`（產 host-OS 執行檔，非 Windows .exe）
 - 小修正（只改 app 層檔案）→ 直接替換 `dist/SalesReportTool/app/` 下的對應檔案
 - 年度結算（新年開始）→ 執行 `python scripts/merge_historical.py` 將舊當年度合併入 `historical.csv`，
   再將新年度 xlsx 放入 `data/Current Year/`
