@@ -10,13 +10,52 @@ Streamlit-based sales performance analysis tool with automatic data classificati
 
 **End Users:** Double-click `SalesReportTool.exe`
 
-**Developers:**
+**Developers (macOS / Linux):**
 ```bash
-./venv311/Scripts/Activate.ps1
 pip install -r requirements.txt
-streamlit run app/app.py   # dev server
-build.bat                  # build exe
+chmod +x run.sh build-mac.sh   # first time only
+./run.sh                       # dev server (streamlit run app/app.py)
 ```
+
+**Developers (Windows):**
+```powershell
+.\venv311\Scripts\Activate.ps1
+pip install -r requirements.txt
+streamlit run app/app.py       # dev server
+```
+
+---
+
+## Build & Release
+
+Release builds are produced in **CI**, not locally. PyInstaller cannot cross-compile, so the
+distributable Windows `.exe` is always built on a Windows runner via GitHub Actions
+(`.github/workflows/build-windows.yml`).
+
+### Releasing a new version (recommended)
+
+1. Commit and push your changes.
+2. Tag the release and push the tag:
+   ```bash
+   git tag v3.7.0
+   git push origin v3.7.0
+   ```
+3. The **Build Windows EXE** workflow runs on `windows-latest`, builds the `.exe`, and attaches
+   `SalesReportTool-windows.zip` to the matching GitHub Release automatically.
+4. End users download the zip from the Release, unzip, and double-click `SalesReportTool.exe`.
+
+You can also run the workflow manually from the **Actions** tab (`workflow_dispatch`); the
+`.zip` is then available as a downloadable workflow artifact.
+
+### Local builds (smoke-test only)
+
+| Platform | Command | Output |
+|----------|---------|--------|
+| Windows | `build.bat` | Distributable `dist\SalesReportTool\` (Windows / VM fallback) |
+| macOS / Linux | `./build-mac.sh` | **Host-OS** binary for local testing only — **not** a Windows `.exe` |
+
+> `build-mac.sh` produces a binary for whatever OS you run it on. It exists to verify the build
+> locally; distributable Windows `.exe` files must come from `build.bat` or CI.
 
 ---
 
@@ -24,6 +63,9 @@ build.bat                  # build exe
 
 ```
 SalesReportTool/
+├── .github/
+│   └── workflows/
+│       └── build-windows.yml  # CI: build Windows .exe + attach to Release
 ├── app/
 │   ├── app.py              # Streamlit UI
 │   ├── charts.py           # Altair chart functions
@@ -40,7 +82,9 @@ SalesReportTool/
 ├── scripts/
 │   └── merge_historical.py # One-time migration: year folders → historical.csv
 ├── launcher.py
-├── build.bat
+├── build.bat               # Windows build (fallback)
+├── build-mac.sh            # macOS/Linux local smoke-test build
+├── run.sh                  # macOS/Linux dev server
 └── requirements.txt
 ```
 
@@ -152,6 +196,7 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 | FCST customer warnings | Add mapping to `aliases.json` → `fcst_customer` section |
 | Name not normalizing | Check alias key is in normalized form; restart app after editing |
 | Build fails | Run `pip install -r requirements.txt` first |
+| CI build fails on tag push | Open the **Actions** tab → **Build Windows EXE** run and check the failed step's log |
 
 ---
 
@@ -184,4 +229,4 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 ---
 
-*For internal use. Last Updated: 2026-05-28*
+*For internal use. Last Updated: 2026-06-18*
