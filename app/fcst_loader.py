@@ -290,6 +290,21 @@ def agg_budget_monthly(fcst_df: pd.DataFrame) -> pd.DataFrame:
     return agg.sort_values("MonthIndex").reset_index(drop=True)
 
 
+def agg_po_coverage(fcst_df: pd.DataFrame) -> dict:
+    """Compute full-year PO Coverage% = AMT_PO / AMT_Forecast * 100 (AMT-based).
+
+    Input: output of get_fcst_for_dashboard() — already filtered to Jan–Dec months.
+    Returns dict with keys: po_total, forecast_total, po_coverage_pct.
+    po_coverage_pct is None when forecast_total is 0 (display as "-").
+    """
+    if fcst_df.empty or "AMT_Forecast" not in fcst_df.columns or "AMT_PO" not in fcst_df.columns:
+        return {"po_total": 0, "forecast_total": 0, "po_coverage_pct": None}
+    po_total = float(fcst_df["AMT_PO"].sum())
+    forecast_total = float(fcst_df["AMT_Forecast"].sum())
+    po_coverage_pct = (po_total / forecast_total * 100) if forecast_total else None
+    return {"po_total": po_total, "forecast_total": forecast_total, "po_coverage_pct": po_coverage_pct}
+
+
 # ── Internal helpers ──────────────────────────────────────
 
 def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
