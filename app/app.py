@@ -764,24 +764,31 @@ with main_tab3:
             _fk3.metric("📈 FY GP Margin Forecast", f"{_fy_gp_pct:.1f}%")
             _fk4.metric("📦 FY Units Forecast", f"{_fy_qty:,.0f}")
 
-        # Container C — Budget Achievement
+        # Container C — Budget Achievement & PO Coverage
         try:
             _budget_monthly = fcst_loader.agg_budget_monthly(_fcst_raw)
-            if not _budget_monthly.empty:
+            _po_cov = fcst_loader.agg_po_coverage(_fcst_raw)
+            _has_budget = not _budget_monthly.empty
+            if _has_budget:
                 _fy_budget_rev = _budget_monthly["Revenue"].sum()
                 _budget_achievement_pct = (
                     _ytd_rev / _fy_budget_rev * 100 if _fy_budget_rev else 0.0
                 )
+            _po_pct = _po_cov["po_coverage_pct"]
+            if _has_budget or _po_pct is not None:
                 st.divider()
                 with st.container(border=True):
-                    st.subheader("🎯 Budget Achievement")
-                    _bk1, _bk2 = st.columns(2)
-                    _bk1.metric("🎯 Budget Achievement", f"{_budget_achievement_pct:.1f}%")
-                    _bk1.caption("YTD vs FY Budget")
-                    _bk2.metric("📊 FY Budget Revenue (TWD)", fmt_num(_fy_budget_rev))
-                    _bk2.caption(f"Current: {fmt_num(_ytd_rev)}")
+                    st.subheader("🎯 Budget Achievement & PO Coverage")
+                    _bk1, _bk2, _bk3 = st.columns(3)
+                    if _has_budget:
+                        _bk1.metric("🎯 Budget Achievement", f"{_budget_achievement_pct:.1f}%")
+                        _bk1.caption("YTD vs FY Budget")
+                        _bk2.metric("📊 FY Budget Revenue (TWD)", fmt_num(_fy_budget_rev))
+                        _bk2.caption(f"Current: {fmt_num(_ytd_rev)}")
+                    _bk3.metric("📋 PO Coverage%", f"{_po_pct:.1f}%" if _po_pct is not None else "-")
+                    _bk3.caption("PO / Forecast (FY, AMT)")
         except Exception as _budget_err:
-            print(f"[Dashboard] Warning: Failed to calculate Budget Achievement%: {_budget_err}")
+            print(f"[Dashboard] Warning: Failed to calculate Budget Achievement / PO Coverage: {_budget_err}")
 
     st.divider()
 
@@ -980,6 +987,7 @@ with main_tab3:
             _fy_budget_revenue = 0
             _budget_achievement_pct = 0
             _fcst_filtered = pd.DataFrame()
+            _cust_po_cov = {"po_total": 0, "forecast_total": 0, "po_coverage_pct": None}
             if _do_fcst and not _fcst_raw.empty:
                 _fcst_filtered = _fcst_raw[_fcst_raw["Customer"].isin(_targets)].copy()
                 if not _fcst_filtered.empty:
@@ -1004,6 +1012,7 @@ with main_tab3:
                     _budget_achievement_pct = (
                         _ytd_actual_revenue / _fy_budget_revenue * 100
                     ) if _fy_budget_revenue else 0
+                    _cust_po_cov = fcst_loader.agg_po_coverage(_fcst_filtered)
 
             _label = (
                 ", ".join(_targets)
@@ -1016,7 +1025,7 @@ with main_tab3:
             if _do_fcst and not _fcst_raw.empty and not _fcst_filtered.empty:
                 with st.container(border=True):
                     st.markdown("**FY Forecast KPIs**")
-                    _fkc1, _fkc2, _fkc3, _fkc4 = st.columns(4)
+                    _fkc1, _fkc2, _fkc3, _fkc4, _fkc5 = st.columns(5)
                     _rev_diff = _fy_forecast_revenue - _fy_budget_revenue
                     _fkc1.metric(
                         "FY Forecast Revenue (TWD)", fmt_num(_fy_forecast_revenue),
@@ -1035,6 +1044,12 @@ with main_tab3:
                         delta=('+' if _ytd_diff >= 0 else '') + fmt_num(_ytd_diff),
                         delta_color="normal",
                     )
+                    _cust_po_pct = _cust_po_cov["po_coverage_pct"]
+                    _fkc5.metric(
+                        "📋 PO Coverage%",
+                        f"{_cust_po_pct:.1f}%" if _cust_po_pct is not None else "-",
+                    )
+                    _fkc5.caption("PO / Forecast (FY, AMT)")
 
             with st.container(border=True):
                 _dkc1, _dkc2, _dkc3, _dkc4 = st.columns(4)
