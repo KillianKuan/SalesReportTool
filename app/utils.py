@@ -1,8 +1,10 @@
 """utils.py — Data loading, cleaning, classification, and report helpers."""
 
+import functools
 import json
 import os
 import re
+import string
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +38,11 @@ DATA_DIR = APP_DIR.parent / "data"
 HISTORICAL_DIR = DATA_DIR / "Over the Years"
 CURRENT_YEAR_DIR = DATA_DIR / "Current Year"
 HISTORICAL_CSV = HISTORICAL_DIR / "historical.csv"
+HISTORICAL_PARQUET = HISTORICAL_DIR / "historical.parquet"
 OVERRIDES_FILE = str(APP_DIR / "overrides.json")
+
+# Translation table used to strip punctuation during name normalization.
+_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
 
 # ── Data folder scanning ─────────────────────────────────────────
@@ -84,16 +90,20 @@ def _normalize_name(name, upper=True):
     if not isinstance(name, str):
         return ""
     # Remove punctuation
-    import string
-    name = name.translate(str.maketrans('', '', string.punctuation))
+    name = name.translate(_PUNCT_TABLE)
     # Compress whitespace
     name = re.sub(r'\s+', ' ', name.strip())
     # Unify case
     return name.upper() if upper else name.lower()
 
 
+@functools.lru_cache(maxsize=None)
 def _load_aliases(kind):
-    """Load aliases from app/aliases.json."""
+    """Load aliases from app/aliases.json.
+
+    Cached per process: the file is read and parsed only once per ``kind``
+    instead of on every call (previously re-opened for every row).
+    """
     try:
         with open(APP_DIR / "aliases.json", encoding="utf-8") as f:
             data = json.load(f)
@@ -114,6 +124,39 @@ def normalize_sales_person(name):
     normalized = _normalize_name(name, upper=False)
     aliases = _load_aliases("sales_person")
     return aliases.get(normalized, normalized)
+
+
+def _normalize_series(names, upper=True):
+    """Vectorized equivalent of _normalize_name() over a pandas Series."""
+    out = (
+        names.astype(str)
+        .str.translate(_PUNCT_TABLE)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+    return out.str.upper() if upper else out.str.lower()
+
+
+def normalize_customer_series(names):
+    """Vectorized customer-name normalization with alias mapping.
+
+    Equivalent to ``names.apply(normalize_customer_name)`` but avoids per-row
+    work: aliases are loaded once and applied with a dict-based ``.map()``.
+    Unmatched names keep their normalized value (same fallback as before).
+    """
+    normalized = _normalize_series(names, upper=True)
+    aliases = _load_aliases("customer")
+    return normalized.map(aliases).fillna(normalized)
+
+
+def normalize_sales_person_series(names):
+    """Vectorized sales-person normalization with alias mapping.
+
+    Equivalent to ``names.apply(normalize_sales_person)``.
+    """
+    normalized = _normalize_series(names, upper=False)
+    aliases = _load_aliases("sales_person")
+    return normalized.map(aliases).fillna(normalized)
 
 
 # ── Data loading (cached) ────────────────────────────────────────
@@ -218,10 +261,10 @@ def load_single_file(file_path: str, rules_key):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         df["Currency"] = df["Currency"].astype(str).str.strip()
     df["Customer Name"] = df["Customer Name"].astype(str).str.strip()
-    df["Customer Name"] = df["Customer Name"].apply(normalize_customer_name)
+    df["Customer Name"] = normalize_customer_series(df["Customer Name"])
     if has_sp:
         df["SALE_Person"] = df["SALE_Person"].astype(str).str.strip()
-        df["SALE_Person"] = df["SALE_Person"].apply(normalize_sales_person)
+        df["SALE_Person"] = normalize_sales_person_series(df["SALE_Person"])
     df = df[~df["Customer Name"].isin(["nan", "NaN", ""])]
     df["Part Number"] = (
         df["Part Number"].astype(str).str.strip()
@@ -248,17 +291,24 @@ def _try_read_csv_with_encodings(file_path: str, encodings):
 
 @st.cache_data
 def load_historical_csv(file_path: str, rules_key):
-    """Load data/Over the Years/historical.csv.
+    """Load data/Over the Years/historical.csv (or its Parquet sibling).
     Applies the same cleaning pipeline as load_single_file().
     Returns (df, nat_count, err, ambiguous, has_des, has_shipping).
+
+    For faster cold-start loading, a sibling ``historical.parquet`` is used
+    when present; otherwise the multi-encoding CSV reader is used.
     """
+    parquet_path = Path(file_path).with_suffix(".parquet")
     try:
-        raw = _try_read_csv_with_encodings(
-            file_path,
-            ["utf-8-sig", "utf-8", "cp950", "cp936", "latin1"],
-        )
+        if parquet_path.exists():
+            raw = pd.read_parquet(parquet_path)
+        else:
+            raw = _try_read_csv_with_encodings(
+                file_path,
+                ["utf-8-sig", "utf-8", "cp950", "cp936", "latin1"],
+            )
     except Exception as e:
-        return None, 0, f"Cannot read historical.csv: {e}", [], False, False
+        return None, 0, f"Cannot read historical data: {e}", [], False, False
 
     missing = [c for c in REQUIRED_COLS if c not in raw.columns]
     if missing:
@@ -337,10 +387,10 @@ def load_historical_csv(file_path: str, rules_key):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         df["Currency"] = df["Currency"].astype(str).str.strip()
     df["Customer Name"] = df["Customer Name"].astype(str).str.strip()
-    df["Customer Name"] = df["Customer Name"].apply(normalize_customer_name)
+    df["Customer Name"] = normalize_customer_series(df["Customer Name"])
     if has_sp:
         df["SALE_Person"] = df["SALE_Person"].astype(str).str.strip()
-        df["SALE_Person"] = df["SALE_Person"].apply(normalize_sales_person)
+        df["SALE_Person"] = normalize_sales_person_series(df["SALE_Person"])
     df = df[~df["Customer Name"].isin(["nan", "NaN", ""])]
     df["Part Number"] = (
         df["Part Number"].astype(str).str.strip()

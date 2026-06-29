@@ -6,6 +6,7 @@ Usage:
 
 Reads:  data/{year}/*.xlsx (Actual sheet), for year != current calendar year
 Writes: data/Over the Years/historical.csv (UTF-8-BOM, Excel-compatible)
+        data/Over the Years/historical.parquet (fast cold-start loading)
 """
 
 import sys
@@ -96,6 +97,15 @@ def main() -> None:
     out_path = out_dir / "historical.csv"
     merged.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"\nWrote {len(merged):,} rows → {out_path}")
+
+    # Also write a Parquet copy for fast cold-start loading in the app.
+    # load_historical_csv() prefers this file when present, falling back to CSV.
+    parquet_path = out_dir / "historical.parquet"
+    try:
+        merged.to_parquet(parquet_path, index=False)
+        print(f"Wrote {len(merged):,} rows → {parquet_path}")
+    except Exception as e:  # pragma: no cover - depends on optional parquet engine
+        print(f"  WARN: could not write Parquet ({e}); CSV is still available.")
 
 
 if __name__ == "__main__":
