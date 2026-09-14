@@ -1,16 +1,26 @@
-"""launcher.py - PyInstaller entry point.
+"""launcher.py - PyInstaller entry point (Windows + macOS).
 
-Starts Streamlit in a subprocess, shows a system tray icon, and opens the
-browser when the server is ready.  Single-instance protection prevents a
-second copy from starting when one is already running.
+Starts Streamlit in a subprocess, shows a system tray / menu bar icon, and
+opens the browser when the server is ready.  Single-instance protection
+prevents a second copy from starting when one is already running.
 
-All parent-process output is redirected to salesreport.log next to the exe.
-The child process (Streamlit) also writes to the same log file via Popen pipes.
+Platform differences live in this module only (via ``sys.platform`` checks):
+
+| Concern       | Windows (unchanged)          | macOS (.app bundle)                                   |
+|---------------|------------------------------|-------------------------------------------------------|
+| Log file      | next to the .exe             | ~/Library/Logs/SalesReportTool/salesreport.log         |
+| Data folder   | data/ next to the .exe       | ~/Library/Application Support/SalesReportTool/data     |
+| overrides.json| app/overrides.json in dist   | ~/Library/Application Support/SalesReportTool/overrides.json |
+
+A macOS ``.app`` bundle must be treated as read-only, so nothing is ever
+written inside it.  The resolved paths are exported to the Streamlit child
+process through environment variables (see ``app/utils.py``).
 """
 
 import atexit
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -24,12 +34,20 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+APP_NAME = "SalesReportTool"
 BASE_PORT = 8501
 MAX_PORT = 8510
 CHILD_MODE_ENV = "SALESREPORT_CHILD"
 PORT_ENV = "SALESREPORT_STREAMLIT_PORT"
+DATA_DIR_ENV = "SALESREPORT_DATA_DIR"
+OVERRIDES_ENV = "SALESREPORT_OVERRIDES_FILE"
 LOG_MAX_BYTES = 1 * 1024 * 1024   # 1 MB
 LOG_KEEP_BYTES = 512 * 1024        # keep last 500 KB when trimming
+
+DATA_SUBDIRS = ("Over the Years", "Current Year", "FCST")
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 _LOCK_FILE = Path(tempfile.gettempdir()) / "salesreport.lock"
 
@@ -39,14 +57,143 @@ _log_file = None   # open file handle (parent only)
 
 
 # ---------------------------------------------------------------------------
-# Log file setup  (parent process only)
+# Platform-aware path resolution
 # ---------------------------------------------------------------------------
 
-def _get_log_path() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "salesreport.log"
-    return Path(__file__).resolve().parent / "salesreport.log"
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
 
+
+def _source_dir() -> Path:
+    """Directory of this file when running from source."""
+    return Path(__file__).resolve().parent
+
+
+def _exe_dir() -> Path:
+    """Directory containing the frozen executable."""
+    return Path(sys.executable).resolve().parent
+
+
+def _meipass_dir() -> Path | None:
+    meipass = getattr(sys, "_MEIPASS", None)
+    return Path(meipass) if meipass else None
+
+
+def macos_bundle_dir() -> Path | None:
+    """Return the enclosing ``*.app`` directory, or None when not bundled."""
+    if not (IS_MACOS and is_frozen()):
+        return None
+    exe = Path(sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def _macos_support_dir() -> Path:
+    return Path.home() / "Library" / "Application Support" / APP_NAME
+
+
+def resource_dirs() -> list[Path]:
+    """Read-only locations that may contain bundled ``app/`` and ``assets/``."""
+    dirs: list[Path] = []
+    if is_frozen():
+        dirs.append(_exe_dir())
+        meipass = _meipass_dir()
+        if meipass:
+            dirs.append(meipass)
+        bundle = macos_bundle_dir()
+        if bundle:
+            dirs.append(bundle / "Contents" / "Resources")
+    else:
+        dirs.append(_source_dir())
+    return dirs
+
+
+def _get_log_path() -> Path:
+    if IS_MACOS and is_frozen():
+        log_dir = Path.home() / "Library" / "Logs" / APP_NAME
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / "salesreport.log"
+    if is_frozen():
+        return _exe_dir() / "salesreport.log"
+    return _source_dir() / "salesreport.log"
+
+
+def default_data_dir() -> Path:
+    """Where the Excel/CSV input data lives.
+
+    Windows keeps the historical exe-relative ``data/`` folder.  A macOS
+    ``.app`` bundle is read-only, so user data goes to Application Support.
+    """
+    if IS_MACOS and is_frozen():
+        return _macos_support_dir() / "data"
+    if is_frozen():
+        return _exe_dir() / "data"
+    return _source_dir() / "data"
+
+
+def default_overrides_path() -> Path:
+    if IS_MACOS and is_frozen():
+        return _macos_support_dir() / "overrides.json"
+    for base in resource_dirs():
+        candidate = base / "app" / "overrides.json"
+        if candidate.exists():
+            return candidate
+    return (_exe_dir() if is_frozen() else _source_dir()) / "app" / "overrides.json"
+
+
+def _bundled_sample_data_dir() -> Path | None:
+    for base in resource_dirs():
+        candidate = base / "data"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def ensure_user_data_dir() -> Path:
+    """Resolve (and on macOS create/seed) the writable data directory."""
+    data_dir = Path(os.environ.get(DATA_DIR_ENV) or default_data_dir())
+
+    if not (IS_MACOS and is_frozen()):
+        return data_dir
+
+    for sub in DATA_SUBDIRS:
+        (data_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    # Seed from bundled sample data only when the target subfolder is empty.
+    sample = _bundled_sample_data_dir()
+    if sample and sample.resolve() != data_dir.resolve():
+        for sub in DATA_SUBDIRS:
+            src, dst = sample / sub, data_dir / sub
+            if not src.is_dir() or any(dst.iterdir()):
+                continue
+            for item in src.iterdir():
+                try:
+                    if item.is_dir():
+                        shutil.copytree(item, dst / item.name)
+                    else:
+                        shutil.copy2(item, dst / item.name)
+                except Exception as exc:
+                    print(f"WARNING: could not seed {item}: {exc}")
+    return data_dir
+
+
+def ensure_overrides_path() -> Path:
+    path = Path(os.environ.get(OVERRIDES_ENV) or default_overrides_path())
+    if IS_MACOS and is_frozen():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            try:
+                path.write_text("[]", encoding="utf-8")
+            except Exception as exc:
+                print(f"WARNING: could not create {path}: {exc}")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Log file setup  (parent process only)
+# ---------------------------------------------------------------------------
 
 def _trim_log(path: Path) -> None:
     """If the log exceeds LOG_MAX_BYTES, keep only the last LOG_KEEP_BYTES."""
@@ -98,9 +245,9 @@ def _open_log() -> None:
     """Open the log file in the OS default text viewer."""
     if _log_path is None or not _log_path.exists():
         return
-    if sys.platform == "win32":
+    if IS_WINDOWS:
         os.startfile(str(_log_path))
-    elif sys.platform == "darwin":
+    elif IS_MACOS:
         subprocess.Popen(["open", str(_log_path)])
     else:
         subprocess.Popen(["xdg-open", str(_log_path)])
@@ -136,15 +283,7 @@ def wait_for_server(url: str, max_wait: int = 60) -> bool:
 
 
 def get_app_path() -> Path:
-    candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        exe_base = Path(sys.executable).resolve().parent
-        candidates.append(exe_base / "app" / "app.py")
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.append(Path(meipass) / "app" / "app.py")
-    else:
-        candidates.append(Path(__file__).resolve().parent / "app" / "app.py")
+    candidates: list[Path] = [base / "app" / "app.py" for base in resource_dirs()]
 
     for candidate in candidates:
         if candidate.exists():
@@ -185,6 +324,7 @@ def check_single_instance() -> None:
 
     Uses port liveness rather than PID signals — os.kill(pid, 0) is unreliable
     on Windows (PermissionError masquerades as the process being alive/dead).
+    The same check works unchanged on macOS.
     """
     try:
         lock = read_lock()
@@ -209,25 +349,20 @@ def check_single_instance() -> None:
 
 
 # ---------------------------------------------------------------------------
-# System tray icon
+# System tray / menu bar icon
 # ---------------------------------------------------------------------------
 
+def _icon_candidates() -> list[Path]:
+    """Icon files to try, in order.  macOS prefers .icns, Windows .ico."""
+    names = ["app.icns", "app.png", "app.ico"] if IS_MACOS else ["app.ico", "app.png"]
+    return [base / "assets" / name for base in resource_dirs() for name in names]
+
+
 def _make_icon_image():
-    """Return a PIL Image: app.ico if present, otherwise a bar-chart fallback."""
+    """Return a PIL Image: bundled icon if present, otherwise a bar-chart fallback."""
     from PIL import Image, ImageDraw
 
-    # Prefer the bundled .ico
-    ico_candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        exe_base = Path(sys.executable).resolve().parent
-        ico_candidates.append(exe_base / "assets" / "app.ico")
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            ico_candidates.append(Path(meipass) / "assets" / "app.ico")
-    else:
-        ico_candidates.append(Path(__file__).resolve().parent / "assets" / "app.ico")
-
-    for path in ico_candidates:
+    for path in _icon_candidates():
         if path.exists():
             try:
                 return Image.open(path).convert("RGBA").resize((64, 64))
@@ -307,11 +442,21 @@ def _terminate_child(proc: "subprocess.Popen[bytes]") -> None:
 
 
 def _show_fatal(msg: str) -> None:
-    """Show an error dialog even without a console (Windows only)."""
-    if sys.platform == "win32":
+    """Show an error dialog even without a console."""
+    if IS_WINDOWS:
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, msg, "Sales Report Tool — Error", 0x10)
+            return
+        except Exception:
+            pass
+    elif IS_MACOS:
+        try:
+            script = (
+                'display dialog {msg} with title "Sales Report Tool — Error" '
+                'buttons {{"OK"}} with icon stop'
+            ).format(msg=json.dumps(msg))
+            subprocess.Popen(["osascript", "-e", script])
             return
         except Exception:
             pass
@@ -337,9 +482,9 @@ def run_streamlit_child() -> None:
 
 
 def build_child_command() -> list[str]:
-    if getattr(sys, "frozen", False):
+    if is_frozen():
         return [sys.executable]
-    return [sys.executable, str(Path(__file__).resolve())]
+    return [sys.executable, str(_source_dir() / "launcher.py")]
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +518,14 @@ def main() -> None:
 def _main_parent() -> None:
     # ---- Single-instance check ----
     check_single_instance()
+
+    # ---- Resolve writable paths (created on first launch on macOS) ----
+    data_dir = ensure_user_data_dir()
+    overrides_path = ensure_overrides_path()
+    os.environ[DATA_DIR_ENV] = str(data_dir)
+    os.environ[OVERRIDES_ENV] = str(overrides_path)
+    print(f"Data dir: {data_dir}", flush=True)
+    print(f"Overrides: {overrides_path}", flush=True)
 
     # ---- Find free port and write lock ----
     port = find_free_port()
