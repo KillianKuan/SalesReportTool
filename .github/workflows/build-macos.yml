@@ -1,0 +1,77 @@
+name: Build macOS App
+
+# Development happens on an Apple Silicon Mac; colleagues run the Windows .exe.
+# PyInstaller cannot cross-compile, so each platform is packaged on its own
+# runner. Both workflows attach their artifact to the SAME GitHub Release for a
+# given vX.Y.Z tag - do not create a separate release here.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    # macos-14 and newer are Apple Silicon (arm64) runners.
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # build-mac.sh owns the macOS PyInstaller flags so the local build and CI
+      # cannot drift apart. Keep the shared flags in sync with build.bat.
+      - name: Build SalesReportTool.app
+        run: |
+          chmod +x build-mac.sh
+          ./build-mac.sh --skip-deps
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "dist/SalesReportTool.app" ]; then
+            echo "Build failed: SalesReportTool.app not found"
+            exit 1
+          fi
+
+      # ditto preserves bundle metadata and symlinks; plain zip does not.
+      - name: Zip SalesReportTool.app
+        run: ditto -c -k --keepParent dist/SalesReportTool.app SalesReportTool-macOS-arm64.zip
+
+      # ---------------------------------------------------------------------
+      # TODO (out of scope for now): signing / notarization.
+      # When a Developer ID certificate is available, add
+      #   codesign --deep --force --options runtime \
+      #     --sign "Developer ID Application: ..." dist/SalesReportTool.app
+      #   xcrun notarytool submit ... --wait && xcrun stapler staple ...
+      # BEFORE the zip step. Until then the .app is unsigned and first launch
+      # requires right-click -> Open.
+      # ---------------------------------------------------------------------
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SalesReportTool-macOS-arm64
+          path: SalesReportTool-macOS-arm64.zip
+
+      # On tag pushes (vX.Y.Z) attach the zip to the same GitHub Release that
+      # the Windows workflow uploads SalesReportTool-windows.zip to.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SalesReportTool-macOS-arm64.zip
