@@ -39,6 +39,8 @@ jobs:
             --name SalesReportTool `
             --onedir `
             --noconsole `
+            --noupx `
+            --version-file version_info.txt `
             --icon assets\app.ico `
             --collect-all streamlit `
             --copy-metadata streamlit `
@@ -63,6 +65,12 @@ jobs:
             Write-Error "Build failed: SalesReportTool.exe not found"
             exit 1
           }
+
+      # SHA256 of the built exe, for submitting to Trend Micro / IT allowlisting
+      # if the release is flagged as a false positive.
+      - name: Print SHA256 of built exe
+        run: |
+          Get-FileHash -Path "dist\SalesReportTool\SalesReportTool.exe" -Algorithm SHA256
 
       # Same post-build copy steps as build.bat: bundle app/ and data/.
       - name: Copy app/ and data/ into dist

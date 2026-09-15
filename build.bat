@@ -23,6 +23,8 @@ python -m PyInstaller ^
     --name SalesReportTool ^
     --onedir ^
     --noconsole ^
+    --noupx ^
+    --version-file version_info.txt ^
     --icon assets\app.ico ^
     --collect-all streamlit ^
     --copy-metadata streamlit ^
@@ -69,6 +71,10 @@ if exist data (
 
 echo [5/5] Verifying...
 dir "dist\SalesReportTool\SalesReportTool.exe"
+
+echo.
+echo SHA256 of SalesReportTool.exe (submit to Trend Micro / IT for allowlisting if flagged):
+certutil -hashfile "dist\SalesReportTool\SalesReportTool.exe" SHA256
 
 echo.
 echo ============================================
