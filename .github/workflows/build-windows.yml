@@ -32,6 +32,11 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Pure-stdlib unittest suite covering launcher.py's atomic app/ mirror.
+      # launcher.py is shared across platforms, so this also guards Windows.
+      - name: Run launcher tests
+        run: python -m unittest discover -s tests -v
+
       # Reuses the EXACT PyInstaller flags from build.bat. Keep both in sync.
       - name: Build with PyInstaller
         run: |
