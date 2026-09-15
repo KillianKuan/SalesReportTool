@@ -2,7 +2,7 @@
 
 Streamlit-based sales performance analysis tool with automatic data classification and forecast integration.
 
-**Version:** 3.9 | **Build Date:** September 2026
+**Version:** 4.0 | **Build Date:** September 2026
 
 ---
 
@@ -318,7 +318,24 @@ bottom (with confirmation).
 
 ## Change Log
 
-### Unreleased
+### v4.0 (September 2026)
+- **UI redesign**: the visual layer was rebuilt around a single design-token module
+  (`app/theme.py`) — deep-green chrome, mint canvas, white/dark rounded cards, and Material
+  Symbols icons in place of emoji throughout. No data loading, blending, or KPI math changed.
+  - `app/theme.py` is now the only place colors, radii, spacing and category/source palettes are
+    defined; `get_tokens(mode)`, `CATEGORY_COLORS(mode)` and `SOURCE_COLORS(mode)` resolve light
+    vs. dark values. `utils.inject_theme_css()` emits them as CSS custom properties, and
+    `utils.resolve_theme_mode()` picks an explicit light/dark for chart rendering (the CSS itself
+    still follows `prefers-color-scheme` live when the Settings theme is "System").
+  - `charts.py` registers one shared Altair theme (`apply_altair_theme(mode)`) — token colors,
+    horizontal-only gridlines, no chart border, top legends, and abbreviated numeric axis labels
+    (1.2M / 340K) — and every chart now takes an explicit `mode` instead of hardcoded hex colors.
+  - New `kpi_card()` / `card_title()` helpers (in `theme.py`) replace `st.metric()` and the old
+    double-title pattern; every dashboard section is now a bordered card with consistent spacing.
+  - Company Dashboard's first screen is a `[2, 1]` layout: the monthly trend chart on the left,
+    a stacked KPI summary + compact Top Customers list on the right.
+  - Sidebar: the per-customer Sales Person checkbox list became a single multiselect; the FCST
+    sheet picker and System Info moved into expanders so the sidebar fits one screen.
 - New **⚙️ Settings** tab: Theme (Light/Dark/System), Customer Ignore List, and Account Match
   (FCST ↔ Performance Report customer mapping with custom groups), all persisted to the new
   `app/settings.json` and effective immediately — see [Settings](#settings) and
