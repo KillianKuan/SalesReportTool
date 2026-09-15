@@ -16,10 +16,20 @@ code under ``app/`` is fully shared and unaware of the platform.
 | settings.json  | app/settings.json       | ~/Library/Application Support/SalesReportTool/app/settings.json   |
 
 A macOS ``.app`` bundle is read-only, so on every launch the bundled ``app/``
-folder is mirrored into Application Support (user-written files preserved) and
-Streamlit is started from that copy.  ``utils.py`` then resolves ``data/``
-(``APP_DIR.parent / "data"``) and ``overrides.json`` to writable locations
-without any macOS-specific code in ``app/``.
+folder is staged into a scratch copy, persistent user-state files
+(``overrides.json``, ``settings.json``) are restored into it, the result is
+validated, and only then atomically swapped in to replace the live copy in
+Application Support (see ``mirror_app_dir()``) - a failure partway through
+never leaves a half-updated app/ behind.  Streamlit is started from that
+copy.  ``utils.py`` then resolves ``data/`` (``APP_DIR.parent / "data"``) and
+``overrides.json`` to writable locations without any macOS-specific code in
+``app/``.
+
+``aliases.json`` (bundled defaults, git-tracked) and ``settings.json``'s
+``customer_aliases`` / ``fcst_customer_aliases`` (user overrides) are two
+separate layers merged at read time by ``fcst_loader.py`` - the bundle can
+freely update its defaults on every upgrade without ever touching a user's
+custom mappings, since they live in a different file.
 """
 
 import atexit
@@ -49,8 +59,22 @@ LOG_KEEP_BYTES = 512 * 1024        # keep last 500 KB when trimming
 
 DATA_SUBDIRS = ("Over the Years", "Current Year", "FCST")
 # Files inside app/ that the running app writes to and must survive an upgrade.
+# aliases.json is deliberately NOT in this list: it is a bundled default
+# (git-tracked, shipped with the app) and is always refreshed from the
+# bundle. User overrides on top of it live in settings.json's
+# "customer_aliases" / "fcst_customer_aliases" keys instead, so the two
+# layers - bundled defaults vs. user overrides - never collide on disk.
 USER_STATE_FILES = ("overrides.json", "settings.json")
 _USER_STATE_DEFAULTS = {"overrides.json": "[]", "settings.json": "{}"}
+
+# Files that must exist (and be non-empty) in a mirrored app/ copy before it
+# is safe to run Streamlit against it.
+REQUIRED_RUNTIME_FILES = ("app.py", "utils.py", "charts.py", "fcst_loader.py")
+
+
+class RuntimeMirrorError(RuntimeError):
+    """Raised when the bundled app/ cannot be mirrored into a working, writable copy."""
+
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -154,43 +178,150 @@ def data_dir() -> Path:
     return _source_dir() / "data"
 
 
-def _mirror_app_dir() -> Path:
-    """Copy the bundled ``app/`` into Application Support (macOS only).
+def _copy_tree_fresh(source: Path, destination: Path) -> None:
+    """Replace destination with a full recursive copy of source.
 
-    Runs on every launch so app-code updates ship with the .app, while files
-    the user generates (``overrides.json``) are preserved.
+    Removing destination first (rather than ``dirs_exist_ok=True``) is what
+    makes files removed from the bundle since the last version disappear
+    from the mirrored copy instead of lingering forever.
     """
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+
+
+def _validate_runtime_dir(app_dir: Path) -> list[str]:
+    """Return the required runtime files that are missing or empty under app_dir."""
+    problems = []
+    for name in REQUIRED_RUNTIME_FILES:
+        path = app_dir / name
+        if not path.is_file() or path.stat().st_size == 0:
+            problems.append(name)
+    return problems
+
+
+def _restore_user_state(active_dir: Path, staging_dir: Path) -> None:
+    """Carry persistent user-state files from the live app/ into the staged copy.
+
+    ``staging_dir`` was just built fresh from the bundle, so it currently
+    holds the bundled placeholder versions of ``overrides.json`` /
+    ``settings.json``. Overwrite those with the user's real files whenever
+    the app has run before; otherwise leave the staged default in place (or
+    create one) so the file always exists.
+    """
+    for name in USER_STATE_FILES:
+        source = active_dir / name
+        destination = staging_dir / name
+        if source.is_file():
+            try:
+                shutil.copy2(source, destination)
+                continue
+            except Exception as exc:
+                print(f"WARNING: could not preserve {name} from active app dir: {exc}")
+        if not destination.exists():
+            try:
+                destination.write_text(_USER_STATE_DEFAULTS.get(name, "{}"), encoding="utf-8")
+            except Exception as exc:
+                print(f"WARNING: could not create default {destination}: {exc}")
+
+
+def _backup_dir_for(active_dir: Path) -> Path:
+    return active_dir.parent / (active_dir.name + ".previous")
+
+
+def _recover_interrupted_swap(active_dir: Path) -> None:
+    """Recover from a process crash between the two renames of a previous
+    atomic swap: active_dir would be missing while the backup still holds
+    the last known-good copy. Restore it before attempting a new mirror."""
+    backup_dir = _backup_dir_for(active_dir)
+    if not active_dir.exists() and backup_dir.exists():
+        os.rename(backup_dir, active_dir)
+
+
+def _activate_staged_app(staging_dir: Path, active_dir: Path) -> None:
+    """Atomically swap staging_dir into active_dir's place.
+
+    The current active_dir (if any) is moved aside to a backup path first,
+    then staging_dir is renamed into active_dir's place. Both are simple
+    directory renames on the same filesystem, so each step either fully
+    succeeds or fully fails - there is no window where active_dir is a
+    stale/new file mix. If the second rename fails, the backup is moved
+    back so active_dir is never left missing.
+    """
+    backup_dir = _backup_dir_for(active_dir)
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+    moved_old = False
+    if active_dir.exists():
+        os.rename(active_dir, backup_dir)
+        moved_old = True
+
+    try:
+        os.rename(staging_dir, active_dir)
+    except Exception:
+        if moved_old:
+            os.rename(backup_dir, active_dir)   # roll back so active_dir still works
+        raise
+
+    if moved_old:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def mirror_app_dir(source_dir: Path | None, active_dir: Path) -> Path:
+    """Stage a fresh copy of the bundled app/, merge in user state, validate,
+    then atomically activate it as active_dir. Runs on every launch so
+    app-code updates ship with the .app.
+
+    On failure, the previously-active copy is left untouched and used
+    instead (with a warning logged) whenever it is itself still valid;
+    RuntimeMirrorError is raised only when there is no usable copy at all,
+    so the caller can show an actionable startup error.
+    """
+    active_dir.parent.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_swap(active_dir)
+
+    if source_dir is None or source_dir.resolve() == active_dir.resolve():
+        # Nothing to mirror from (dev/source run, or already the live copy).
+        active_dir.mkdir(parents=True, exist_ok=True)
+        for name in USER_STATE_FILES:
+            path = active_dir / name
+            if not path.exists():
+                try:
+                    path.write_text(_USER_STATE_DEFAULTS.get(name, "{}"), encoding="utf-8")
+                except Exception as exc:
+                    print(f"WARNING: could not create {path}: {exc}")
+        return active_dir
+
+    staging_dir = active_dir.parent / (active_dir.name + ".staging")
+
+    try:
+        _copy_tree_fresh(source_dir, staging_dir)
+        _restore_user_state(active_dir, staging_dir)
+        problems = _validate_runtime_dir(staging_dir)
+        if problems:
+            raise RuntimeMirrorError(
+                "Bundled app copy is missing required file(s): " + ", ".join(problems)
+            )
+        _activate_staged_app(staging_dir, active_dir)
+    except Exception as exc:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if not _validate_runtime_dir(active_dir):
+            print(f"WARNING: could not update app copy, keeping previous version: {exc}")
+            return active_dir
+        raise RuntimeMirrorError(
+            f"Could not prepare a working application copy at {active_dir}: {exc}"
+        ) from exc
+
+    return active_dir
+
+
+def _mirror_app_dir() -> Path:
+    """Resolve the bundled source and live target, then mirror (macOS only)."""
     target = macos_support_dir() / "app"
     source = _find_resource("app/app.py")
-    target.mkdir(parents=True, exist_ok=True)
-
-    if source is None:
-        return target
-
-    source_dir = source.parent
-    if source_dir.resolve() == target.resolve():
-        return target
-
-    for item in source_dir.iterdir():
-        destination = target / item.name
-        if item.name in USER_STATE_FILES and destination.exists():
-            continue   # keep the user's data
-        try:
-            if item.is_dir():
-                shutil.copytree(item, destination, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, destination)
-        except Exception as exc:
-            print(f"WARNING: could not mirror {item}: {exc}")
-
-    for name in USER_STATE_FILES:
-        state_file = target / name
-        if not state_file.exists():
-            try:
-                state_file.write_text(_USER_STATE_DEFAULTS.get(name, "{}"), encoding="utf-8")
-            except Exception as exc:
-                print(f"WARNING: could not create {state_file}: {exc}")
-    return target
+    source_dir = source.parent if source is not None else None
+    return mirror_app_dir(source_dir, target)
 
 
 def _seed_data_dir(target: Path) -> None:
@@ -217,7 +348,12 @@ def _seed_data_dir(target: Path) -> None:
 
 
 def prepare_runtime_dirs() -> None:
-    """First-launch setup for the read-only macOS bundle.  No-op elsewhere."""
+    """First-launch setup for the read-only macOS bundle.  No-op elsewhere.
+
+    Raises RuntimeMirrorError if no working app/ copy could be prepared at
+    all; callers should show an actionable error rather than starting
+    Streamlit against a broken or missing directory.
+    """
     if not is_macos_bundle():
         return
     app_dir = _mirror_app_dir()
@@ -546,6 +682,15 @@ def main() -> None:
 
     try:
         _main_parent()
+    except RuntimeMirrorError as exc:
+        traceback.print_exc()
+        _show_fatal(
+            "Sales Report Tool could not prepare its application files.\n\n"
+            f"{exc}\n\n"
+            "Try reinstalling the app. If the problem persists, check the log:\n"
+            f"{_log_path}"
+        )
+        raise
     except Exception:
         traceback.print_exc()
         _show_fatal(

@@ -271,6 +271,22 @@ Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
   browser open + server ready 偵測在 daemon thread 執行。
 - **平台分歧集中於 launcher.py**: log 路徑、`app/` 鏡射、data 資料夾建立與 seed、圖示格式、
   錯誤對話框、開啟 log 的方式皆由 `IS_WINDOWS` / `IS_MACOS` 與 `macos_bundle_dir()` 判斷。
+- **`app/` 鏡射為 atomic staging（`launcher.mirror_app_dir()`）**: 每次啟動先把 bundle
+  複製到 `app.staging` 暫存目錄（`_copy_tree_fresh()`——先刪除再整份複製，因此 bundle 移除的
+  檔案不會殘留在鏡射副本），再把目前 `app/` 內的 `overrides.json` / `settings.json`
+  （`USER_STATE_FILES`）複製進 staging（`_restore_user_state()`），驗證
+  `app.py`/`utils.py`/`charts.py`/`fcst_loader.py` 都存在且非空（`_validate_runtime_dir()`），
+  全部通過後才用兩次 `os.rename()`（先把舊 `app/` 換名成 `app.previous`，再把 `app.staging`
+  換名成 `app/`）原子性生效（`_activate_staged_app()`）——不會出現新舊模組混雜的中間狀態。
+  任何一步失敗都會清掉 staging、保留原本可用的 `app/` 並記警告到 log；只有連原本的
+  `app/` 都不是有效狀態（例如首次啟動就失敗）才會拋出 `RuntimeMirrorError`，由
+  `main()` 顯示可行動的錯誤訊息（而非直接進入壞掉的 Streamlit）。若 process 剛好在兩次
+  rename 中間當機，下次啟動 `_recover_interrupted_swap()` 會先把 `app.previous`
+  換回 `app/` 再繼續。`aliases.json` 不在 `USER_STATE_FILES` 內，每次都用新 bundle
+  版本整份覆蓋——它是 git-tracked 的預設值層，使用者自訂的 mapping 都在
+  `settings.json` 的 `customer_aliases`/`fcst_customer_aliases`（讀取時疊加，見上方
+  「Account Match」），兩層分開儲存所以不會互相覆蓋。測試見
+  `tests/test_launcher_runtime_mirror.py`（`python3 -m unittest discover -s tests`）。
 - **Single-instance 保護**: 啟動時檢查 `TEMP/salesreport.lock`（JSON 含 PID + port）。
   以 port 是否仍在服務判斷存活（`os.kill(pid, 0)` 在 Windows 不可靠）：port 有回應 →
   開瀏覽器到已執行的 instance + sys.exit；否則刪除 stale lock。此邏輯 Windows/macOS 共用。
@@ -305,7 +321,10 @@ v3.9（最新，已發版）— Windows 打包硬化，降低防毒軟體誤判�
 已合併（待下個 tag 發版）：⚙️ Settings tab（Theme / Customer Ignore List /
 Account Match）+ `settings.json` 持久化設定，settings hash 併入快取失效機制；
 macOS（Apple Silicon）打包與發版流程 — `build-mac.sh` 產出 arm64 `.app`、
-新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物。
+新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物；
+`launcher.mirror_app_dir()` 改為 atomic staging（複製到 `app.staging` → 還原
+user-state → 驗證必要檔案 → 兩次 `os.rename()` 生效），避免 `.app` 升級時出現
+新舊模組混雜或使用者自訂 alias 被覆蓋，新增 `tests/test_launcher_runtime_mirror.py`。
 
 v3.6 — 資料夾結構重構（Over the Years / Current Year）。
 
@@ -341,3 +360,6 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 - 小修正（只改 app 層檔案）→ 直接替換 `dist/SalesReportTool/app/` 下的對應檔案
 - 年度結算（新年開始）→ 執行 `python scripts/merge_historical.py` 將舊當年度合併入 `historical.csv`，
   再將新年度 xlsx 放入 `data/Current Year/`
+- 修改 launcher.py 的 `app/` 鏡射／atomic staging 邏輯 → 跑
+  `python3 -m unittest discover -s tests` 驗證 first launch / restart / upgrade /
+  刪除 bundle 檔案 / copy 失敗 / alias 保留等情境沒有回歸

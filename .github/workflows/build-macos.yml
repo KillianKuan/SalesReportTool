@@ -34,6 +34,12 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # Pure-stdlib unittest suite covering launcher.py's atomic app/ mirror
+      # (first launch, upgrade, deleted files, copy failure, alias
+      # preservation). Fails the build before packaging a broken launcher.
+      - name: Run launcher tests
+        run: python3 -m unittest discover -s tests -v
+
       # build-mac.sh owns the macOS PyInstaller flags so the local build and CI
       # cannot drift apart. Keep the shared flags in sync with build.bat.
       - name: Build SalesReportTool.app
