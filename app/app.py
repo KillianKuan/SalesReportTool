@@ -15,20 +15,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fcst_loader
 
 from utils import (
-    DATA_DIR, CAT_ORDER, _rules_key,
+    DATA_DIR, CAT_ORDER, _rules_key, _normalize_name,
     HISTORICAL_CSV, scan_current_year_folder,
     load_single_file, load_historical_csv, load_overrides, save_overrides,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
     sorted_cats, fmt, show_bycat,
     cached_search_indices,
-    EXCLUDED_CUSTOMERS,
     calc_dashboard_kpis, build_monthly_trend,
     build_category_breakdown, build_monthly_category,
     build_top_customers, build_customer_detail,
     build_customer_monthly_qty_by_cat,
     build_pn_detail,
     fmt_num,
+    load_settings, save_settings, DEFAULT_SETTINGS,
+    inject_theme_css, get_shipped_aliases, validate_alias_mappings,
 )
 from charts import (
     chart_up_tp_trend, chart_qty_by_year, chart_qty_by_month, chart_gp_pct_trend,
@@ -44,6 +45,11 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+if "app_settings" not in st.session_state:
+    st.session_state["app_settings"] = load_settings()
+inject_theme_css(st.session_state["app_settings"].get("theme", "system"))
+
 st.title("📊 Performance Report Data Analysis Tool")
 
 # ?? 0. Year selection (sidebar) ??????????????????????????????????
@@ -56,14 +62,17 @@ historical_nat = 0
 historical_amb = []
 historical_has_des = False
 historical_has_shipping = False
+historical_ignored = 0
 current_df = None
 current_nat = 0
 current_amb = []
 current_has_des = False
 current_has_shipping = False
+current_ignored = 0
 
 if historical_exists:
-    historical_df, historical_nat, historical_err, historical_amb, historical_has_des, historical_has_shipping = (
+    (historical_df, historical_nat, historical_err, historical_amb,
+     historical_has_des, historical_has_shipping, historical_ignored) = (
         load_historical_csv(str(HISTORICAL_CSV), _rules_key())
     )
     if historical_err:
@@ -72,7 +81,8 @@ if historical_exists:
     historical_df = historical_df[historical_df["Ship Date"].dt.year != current_year].copy()
 
 if current_xlsx is not None:
-    current_df, current_nat, current_err, current_amb, current_has_des, current_has_shipping = (
+    (current_df, current_nat, current_err, current_amb,
+     current_has_des, current_has_shipping, current_ignored) = (
         load_single_file(str(current_xlsx), _rules_key())
     )
     if current_err:
@@ -125,9 +135,9 @@ if not all_dfs:
     st.stop()
 
 all_df = pd.concat(all_dfs, ignore_index=True)
-all_df = all_df[~all_df["Customer Name"].isin(EXCLUDED_CUSTOMERS)]
 has_des = global_has_des
 has_shipping = global_has_shipping
+total_ignored_rows = historical_ignored + current_ignored
 
 # ?? Overrides ????????????????????????????????????????????????????
 if "others_overrides" not in st.session_state:
@@ -226,8 +236,8 @@ with st.sidebar.expander("ℹ️ System Info", expanded=False):
 # ??????????????????????????????????????????????????????????????
 # MAIN TABS
 # ??????????????????????????????????????????????????????????????
-main_tab1, main_tab2, main_tab3 = st.tabs(
-    ["📄 Performance Report", "🚚 Shipping Record Search", "📊 Company Dashboard"]
+main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(
+    ["📄 Performance Report", "🚚 Shipping Record Search", "📊 Company Dashboard", "⚙️ Settings"]
 )
 
 # ?? TAB 1: Performance Report ????????????????????????????????????
@@ -710,7 +720,7 @@ with main_tab3:
     if _unmatched_fcst:
         st.warning(
             f"⚠️ FCST 未匹配客戶 ({len(_unmatched_fcst)} 個) — "
-            f"請更新 aliases.json 的 fcst_customer section。"
+            f"請至 **⚙️ Settings ▸ Account Match** 指定對應的 Performance Report 客戶或自訂群組。"
         )
         with st.expander(f"🔍 點擊查看未匹配客戶詳情 ({len(_unmatched_fcst)} 個)", expanded=False):
             _unmatched_df = pd.DataFrame(
@@ -1119,4 +1129,329 @@ with main_tab3:
         else:
             st.info("No data found for selected customer(s).")
 
+# ── TAB 4: Settings ────────────────────────────────────────────────
+with main_tab4:
+    st.header("⚙️ Settings")
+    st.caption(
+        "Changes here are saved to `app/settings.json` immediately and "
+        "survive restarts and version upgrades."
+    )
+
+    if "app_settings" not in st.session_state:
+        st.session_state["app_settings"] = load_settings()
+    _set_settings = st.session_state["app_settings"]
+
+    def _set_persist(new_settings):
+        save_settings(new_settings)
+        st.session_state["app_settings"] = load_settings()
+        st.rerun()
+
+    # A st.radio (not st.tabs) is used for this sub-navigation: every edit in
+    # Section B/C calls st.rerun() to apply immediately, and st.tabs() resets
+    # to its first item on a programmatic rerun — a plain widget key survives it.
+    _set_section = st.radio(
+        "Settings section",
+        ["🎨 Theme", "🚫 Customer Ignore List", "🔗 Account Match"],
+        horizontal=True, label_visibility="collapsed", key="settings_section",
+    )
+    st.divider()
+
+    # ── Section A: Theme ──────────────────────────────────────────
+    if _set_section == "🎨 Theme":
+        st.subheader("🎨 Theme")
+        _set_theme_labels = ["Light", "Dark", "System"]
+        _set_theme_to_label = {"light": "Light", "dark": "Dark", "system": "System"}
+        _set_label_to_theme = {v: k for k, v in _set_theme_to_label.items()}
+        _set_cur_label = _set_theme_to_label.get(_set_settings.get("theme", "system"), "System")
+        _set_new_label = st.radio(
+            "App theme", _set_theme_labels,
+            index=_set_theme_labels.index(_set_cur_label),
+            horizontal=True, key="settings_theme_radio",
+        )
+        _set_new_theme = _set_label_to_theme[_set_new_label]
+        if _set_new_theme != _set_settings.get("theme", "system"):
+            _set_settings["theme"] = _set_new_theme
+            _set_persist(_set_settings)
+        if _set_new_theme in ("light", "dark"):
+            st.caption(
+                "ℹ️ Applied immediately for this session. Restart the app for "
+                "full native theming fidelity (some Streamlit chrome updates only after restart)."
+            )
+        st.divider()
+        if st.button("↩️ Reset Theme to Default", key="settings_reset_theme"):
+            _set_settings["theme"] = DEFAULT_SETTINGS["theme"]
+            _set_persist(_set_settings)
+
+    # ── Section B: Customer Ignore List ─────────────────────────────
+    if _set_section == "🚫 Customer Ignore List":
+        st.subheader("🚫 Customer Ignore List")
+        st.caption(
+            "Rows whose Customer Name (normalized) matches an entry below are "
+            "dropped entirely — from every KPI, chart, drill-down, and export, "
+            "in both the Performance Report and FCST pipelines."
+        )
+        _set_ignored = list(_set_settings.get("ignored_customers", []))
+        _set_known_custs = (
+            sorted(all_df["Customer Name"].dropna().unique().tolist())
+            if not all_df.empty else []
+        )
+
+        _set_add_col1, _set_add_col2 = st.columns([3, 1])
+        with _set_add_col1:
+            _set_add_ms = st.multiselect(
+                "Add customer(s) from current data",
+                options=[c for c in _set_known_custs if c not in _set_ignored],
+                key="settings_ignore_add_ms",
+            )
+            _set_add_free = st.text_input(
+                "Or type a customer name not present in current data",
+                key="settings_ignore_add_free",
+            )
+        with _set_add_col2:
+            st.write("")
+            st.write("")
+            if st.button("➕ Add to ignore list", key="settings_ignore_add_btn"):
+                _set_to_add = list(_set_add_ms)
+                if _set_add_free.strip():
+                    _set_to_add.append(_set_add_free.strip())
+                _set_existing_norms = {_normalize_name(x, upper=True) for x in _set_ignored}
+                _set_added_any = False
+                for _set_name in _set_to_add:
+                    _set_norm = _normalize_name(_set_name, upper=True)
+                    if _set_norm and _set_norm not in _set_existing_norms:
+                        _set_ignored.append(_set_name.strip())
+                        _set_existing_norms.add(_set_norm)
+                        _set_added_any = True
+                if _set_added_any:
+                    _set_settings["ignored_customers"] = _set_ignored
+                    _set_persist(_set_settings)
+                else:
+                    st.warning("Nothing to add — select or type a customer name first.")
+
+        if _set_ignored:
+            st.markdown(f"**Currently ignored ({len(_set_ignored)}):**")
+            for _set_name in list(_set_ignored):
+                _set_r1, _set_r2 = st.columns([5, 1])
+                _set_r1.write(f"`{_set_name}`")
+                if _set_r2.button("✕ Remove", key=f"settings_ignore_rm_{_set_name}"):
+                    _set_ignored.remove(_set_name)
+                    _set_settings["ignored_customers"] = _set_ignored
+                    _set_persist(_set_settings)
+        else:
+            st.caption("No customers are currently ignored.")
+
+        st.divider()
+        _set_fcst_ignored = fcst_loader.get_ignored_row_count() if _do_fcst else 0
+        st.metric(
+            "Rows excluded by ignore list (current load)",
+            f"{total_ignored_rows + _set_fcst_ignored:,}",
+        )
+        st.caption(
+            f"Performance Report: {total_ignored_rows:,} row(s)  ·  "
+            f"FCST: {_set_fcst_ignored:,} row(s)"
+        )
+
+        st.divider()
+        if st.button("↩️ Reset Ignore List to Default", key="settings_reset_ignore"):
+            _set_settings["ignored_customers"] = list(DEFAULT_SETTINGS["ignored_customers"])
+            _set_persist(_set_settings)
+
+    # ── Section C: Account Match (FCST ↔ Performance Report) ────────
+    if _set_section == "🔗 Account Match":
+        st.subheader("🔗 Account Match (FCST ↔ Performance Report)")
+        st.caption(
+            "The Performance Report customer name is the source of truth. "
+            "Map each FCST-only customer name to an existing Performance Report "
+            "customer, or to a custom group bucket."
+        )
+        _set_known_pr = (
+            sorted(all_df["Customer Name"].dropna().unique().tolist())
+            if not all_df.empty else []
+        )
+        _set_groups = list(_set_settings.get("custom_groups", []))
+        _set_fcst_aliases = dict(_set_settings.get("fcst_customer_aliases", {}))
+        _set_cust_aliases = dict(_set_settings.get("customer_aliases", {}))
+
+        st.markdown("#### ⚠️ Needs Mapping")
+        if not _do_fcst:
+            st.info(
+                "Select the current calendar year on the **📊 Company Dashboard** "
+                "tab to load FCST data and see unmatched customers here."
+            )
+        else:
+            _set_unmatched = sorted(fcst_loader.get_unmatched_customers())
+            _set_unmatched_amts = fcst_loader.get_unmatched_customer_amounts()
+            if not _set_unmatched:
+                st.caption("✅ No unmatched FCST customers in the current load.")
+            else:
+                _set_targets = (
+                    ["Others (default)"] + _set_known_pr
+                    + [f"[Group] {g}" for g in _set_groups]
+                )
+                _hc1, _hc2, _hc3, _hc4 = st.columns([3, 2, 2, 3])
+                _hc1.markdown("**FCST Name**")
+                _hc2.markdown("**Sheet**")
+                _hc3.markdown("**Amount**")
+                _hc4.markdown("**Assign To**")
+                for _set_fname, _set_sheet in _set_unmatched:
+                    _set_amt = _set_unmatched_amts.get((_set_fname, _set_sheet), 0.0)
+                    _c1, _c2, _c3, _c4 = st.columns([3, 2, 2, 3])
+                    _c1.write(f"`{_set_fname}`")
+                    _c2.write(_set_sheet)
+                    _c3.write(fmt_num(_set_amt))
+                    _set_existing = _set_fcst_aliases.get(_set_fname, "")
+                    if not _set_existing:
+                        _set_existing_label = "Others (default)"
+                    elif _set_existing in _set_groups:
+                        _set_existing_label = f"[Group] {_set_existing}"
+                    else:
+                        _set_existing_label = _set_existing
+                    _set_targets_local = (
+                        _set_targets if _set_existing_label in _set_targets
+                        else _set_targets + [_set_existing_label]
+                    )
+                    _set_choice = _c4.selectbox(
+                        "Assign", _set_targets_local,
+                        index=_set_targets_local.index(_set_existing_label),
+                        key=f"settings_fcst_map_{_set_fname}_{_set_sheet}",
+                        label_visibility="collapsed",
+                    )
+                    if _set_choice != _set_existing_label:
+                        if _set_choice == "Others (default)":
+                            _set_fcst_aliases.pop(_set_fname, None)
+                        elif _set_choice.startswith("[Group] "):
+                            _set_fcst_aliases[_set_fname] = _set_choice[len("[Group] "):]
+                        else:
+                            _set_fcst_aliases[_set_fname] = _set_choice
+                        _set_settings["fcst_customer_aliases"] = _set_fcst_aliases
+                        _set_persist(_set_settings)
+
+        st.divider()
+        st.markdown("#### 📦 Custom Groups")
+        st.caption(
+            "Additional 'Others'-style buckets (e.g. 'Others - EMEA Distributors') "
+            "selectable anywhere a mapping target is chosen."
+        )
+        _set_gcol1, _set_gcol2 = st.columns([3, 1])
+        with _set_gcol1:
+            _set_new_group = st.text_input(
+                "New group name", key="settings_new_group",
+                placeholder="Others - EMEA Distributors",
+            )
+        with _set_gcol2:
+            st.write("")
+            st.write("")
+            if st.button("➕ Create Group", key="settings_add_group"):
+                _set_gname = _set_new_group.strip()
+                if not _set_gname:
+                    st.warning("Group name cannot be empty.")
+                elif _set_gname in _set_groups:
+                    st.warning("Group already exists.")
+                else:
+                    _set_groups.append(_set_gname)
+                    _set_settings["custom_groups"] = _set_groups
+                    _set_persist(_set_settings)
+
+        for _set_g in list(_set_groups):
+            _gc1, _gc2, _gc3 = st.columns([3, 1, 1])
+            _set_rename_val = _gc1.text_input(
+                f"Rename '{_set_g}'", value=_set_g,
+                key=f"settings_group_rename_{_set_g}",
+                label_visibility="collapsed",
+            )
+            if _gc2.button("💾 Save", key=f"settings_group_save_{_set_g}"):
+                _set_new_name = _set_rename_val.strip()
+                if _set_new_name and _set_new_name != _set_g:
+                    _set_groups[_set_groups.index(_set_g)] = _set_new_name
+                    for _set_d in (_set_fcst_aliases, _set_cust_aliases):
+                        for _set_k, _set_v in list(_set_d.items()):
+                            if _set_v == _set_g:
+                                _set_d[_set_k] = _set_new_name
+                    _set_settings["custom_groups"] = _set_groups
+                    _set_settings["fcst_customer_aliases"] = _set_fcst_aliases
+                    _set_settings["customer_aliases"] = _set_cust_aliases
+                    _set_persist(_set_settings)
+            if _gc3.button("🗑️ Delete", key=f"settings_group_del_{_set_g}"):
+                _set_groups.remove(_set_g)
+                for _set_d in (_set_fcst_aliases, _set_cust_aliases):
+                    for _set_k, _set_v in list(_set_d.items()):
+                        if _set_v == _set_g:
+                            del _set_d[_set_k]
+                _set_settings["custom_groups"] = _set_groups
+                _set_settings["fcst_customer_aliases"] = _set_fcst_aliases
+                _set_settings["customer_aliases"] = _set_cust_aliases
+                _set_persist(_set_settings)
+        if not _set_groups:
+            st.caption("No custom groups yet.")
+
+        st.divider()
+        st.markdown("#### 🧾 Shipping Record Customer Name Aliases")
+        st.caption(
+            "Overrides/additions to aliases.json's 'customer' section "
+            "(used to normalize Customer Name when loading Performance Report data)."
+        )
+        with st.expander("View shipped defaults (aliases.json, read-only)"):
+            st.json(get_shipped_aliases("customer"))
+        _set_akcol1, _set_akcol2, _set_akcol3 = st.columns([2, 2, 1])
+        with _set_akcol1:
+            _set_new_alias_key = st.text_input(
+                "Customer name (as it appears in source file)",
+                key="settings_new_alias_key",
+            )
+        with _set_akcol2:
+            _set_new_alias_val = st.text_input(
+                "Normalize to", key="settings_new_alias_val",
+            )
+        with _set_akcol3:
+            st.write("")
+            st.write("")
+            if st.button("➕ Add / Update", key="settings_add_alias"):
+                if _set_new_alias_key.strip() and _set_new_alias_val.strip():
+                    _set_norm_key = _normalize_name(_set_new_alias_key, upper=True)
+                    _set_cust_aliases[_set_norm_key] = _set_new_alias_val.strip()
+                    _set_settings["customer_aliases"] = _set_cust_aliases
+                    _set_persist(_set_settings)
+                else:
+                    st.warning("Both fields are required.")
+
+        if _set_cust_aliases:
+            for _set_k, _set_v in list(_set_cust_aliases.items()):
+                _ac1, _ac2, _ac3 = st.columns([3, 3, 1])
+                _ac1.write(f"`{_set_k}`")
+                _ac2.write(f"→ `{_set_v}`")
+                if _ac3.button("✕ Remove", key=f"settings_alias_rm_{_set_k}"):
+                    del _set_cust_aliases[_set_k]
+                    _set_settings["customer_aliases"] = _set_cust_aliases
+                    _set_persist(_set_settings)
+        else:
+            st.caption("No custom Shipping Record aliases yet.")
+
+        st.divider()
+        _set_valid_targets = set(_set_known_pr) | set(_set_groups) | {"Signify"}
+        _set_warnings = validate_alias_mappings(_set_cust_aliases, _set_valid_targets)
+        _set_warnings += validate_alias_mappings(_set_fcst_aliases, _set_valid_targets)
+        if _set_warnings:
+            st.warning("⚠️ Mapping validation:\n" + "\n".join(f"- {w}" for w in _set_warnings))
+
+        st.divider()
+        if st.button("↩️ Reset Account Match to Default", key="settings_reset_match"):
+            _set_settings["customer_aliases"] = {}
+            _set_settings["fcst_customer_aliases"] = {}
+            _set_settings["custom_groups"] = []
+            _set_persist(_set_settings)
+
+    st.divider()
+    if st.button("🔄 Reset ALL Settings to Default", key="settings_reset_all", type="primary"):
+        st.session_state["settings_confirm_reset_all"] = True
+    if st.session_state.get("settings_confirm_reset_all"):
+        st.warning("This resets Theme, Ignore List, and Account Match to their shipped defaults.")
+        _rc1, _rc2 = st.columns(2)
+        if _rc1.button("✅ Confirm Reset All", key="settings_confirm_reset_all_btn"):
+            save_settings(dict(DEFAULT_SETTINGS))
+            st.session_state["app_settings"] = load_settings()
+            st.session_state["settings_confirm_reset_all"] = False
+            st.rerun()
+        if _rc2.button("Cancel", key="settings_cancel_reset_all"):
+            st.session_state["settings_confirm_reset_all"] = False
+            st.rerun()
 

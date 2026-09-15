@@ -13,6 +13,7 @@ code under ``app/`` is fully shared and unaware of the platform.
 | Streamlit app  | app/ next to the .exe   | ~/Library/Application Support/SalesReportTool/app (mirrored)      |
 | Data folder    | data/ next to the .exe  | ~/Library/Application Support/SalesReportTool/data                |
 | overrides.json | app/overrides.json      | ~/Library/Application Support/SalesReportTool/app/overrides.json  |
+| settings.json  | app/settings.json       | ~/Library/Application Support/SalesReportTool/app/settings.json   |
 
 A macOS ``.app`` bundle is read-only, so on every launch the bundled ``app/``
 folder is mirrored into Application Support (user-written files preserved) and
@@ -48,7 +49,8 @@ LOG_KEEP_BYTES = 512 * 1024        # keep last 500 KB when trimming
 
 DATA_SUBDIRS = ("Over the Years", "Current Year", "FCST")
 # Files inside app/ that the running app writes to and must survive an upgrade.
-USER_STATE_FILES = ("overrides.json",)
+USER_STATE_FILES = ("overrides.json", "settings.json")
+_USER_STATE_DEFAULTS = {"overrides.json": "[]", "settings.json": "{}"}
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -185,7 +187,7 @@ def _mirror_app_dir() -> Path:
         state_file = target / name
         if not state_file.exists():
             try:
-                state_file.write_text("[]", encoding="utf-8")
+                state_file.write_text(_USER_STATE_DEFAULTS.get(name, "{}"), encoding="utf-8")
             except Exception as exc:
                 print(f"WARNING: could not create {state_file}: {exc}")
     return target
