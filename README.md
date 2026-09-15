@@ -2,7 +2,7 @@
 
 Streamlit-based sales performance analysis tool with automatic data classification and forecast integration.
 
-**Version:** 3.6 | **Build Date:** May 2026
+**Version:** 3.9 | **Build Date:** September 2026
 
 ---
 
@@ -40,13 +40,14 @@ streamlit run app/app.py       # dev server
 | Data folder | `data\` next to the `.exe` | `~/Library/Application Support/SalesReportTool/data/` |
 | Log file | `salesreport.log` next to the `.exe` | `~/Library/Logs/SalesReportTool/salesreport.log` |
 | Category overrides | `app\overrides.json` | `~/Library/Application Support/SalesReportTool/app/overrides.json` |
+| User settings (theme / ignore list / account match) | `app\settings.json` | `~/Library/Application Support/SalesReportTool/app/settings.json` |
 | Local build | `build.bat` | `./build-mac.sh` |
 | CI workflow | `build-windows.yml` | `build-macos.yml` |
 
 > A macOS `.app` bundle is read-only, so on each launch the launcher mirrors the bundled `app/`
-> folder into Application Support and runs Streamlit from there (`overrides.json` is preserved).
-> The code under `app/` is identical on both platforms; all platform differences live in
-> `launcher.py`.
+> folder into Application Support and runs Streamlit from there (`overrides.json` and
+> `settings.json` are preserved). The code under `app/` is identical on both platforms; all
+> platform differences live in `launcher.py`.
 
 ---
 
@@ -111,8 +112,9 @@ SalesReportTool/
 │   ├── charts.py           # Altair chart functions
 │   ├── fcst_loader.py      # FCST parser, blending, budget
 │   ├── utils.py            # Data loading, classification, KPIs
-│   ├── aliases.json        # Name alias mappings
-│   └── overrides.json      # Category overrides (auto-generated)
+│   ├── aliases.json        # Name alias mappings (shipped defaults, git-tracked)
+│   ├── overrides.json      # Category overrides (auto-generated)
+│   └── settings.json       # User settings: theme, ignore list, account match (auto-generated)
 ├── data/
 │   ├── Over the Years/
 │   │   └── historical.csv  # All past years merged (run scripts/merge_historical.py)
@@ -178,6 +180,11 @@ Valid categories: `Tablet` / `CDR` / `Tablet ACC` / `CDR ACC` / `AI_SW` / `Signi
 
 ## Configuration
 
+Most day-to-day configuration — theme, ignored customers, and FCST↔Performance Report account
+mapping — is meant to be done from the **⚙️ Settings** tab in the app (see
+[Tabs & Features](#tabs--features)), which writes to `app/settings.json`. The files below are the
+underlying storage and the shipped defaults that `settings.json` layers on top of.
+
 ### Name Aliases — `app/aliases.json`
 
 ```json
@@ -190,6 +197,9 @@ Valid categories: `Tablet` / `CDR` / `Tablet ACC` / `CDR ACC` / `AI_SW` / `Signi
 
 - Keys must be in normalized form (uppercase for customer, Title Case for sales person)
 - `fcst_customer`: maps FCST Excel names → Shipping Record canonical names; unmatched → `{sheet}_Others`
+- **This file is the shipped default and the app never writes to it.** It's git-tracked and meant
+  for developers to edit; end users add/override mappings from **⚙️ Settings ▸ Account Match**
+  instead, which is layered on top at load time (settings override, defaults fill the rest).
 
 ### Category Overrides — `app/overrides.json`
 
@@ -202,11 +212,43 @@ On macOS the packaged app writes this file to
 `~/Library/Application Support/SalesReportTool/app/overrides.json`; it is preserved when you
 install a newer `.app`.
 
-### Excluded Customers — `utils.py`
+### User Settings — `app/settings.json`
+
+Auto-generated the first time a user changes anything in the **⚙️ Settings** tab. Same
+persistence model as `overrides.json` — user-writable, preserved across restarts and `.app`
+upgrades (see `launcher.py`'s `USER_STATE_FILES`), never committed with real data.
+
+```json
+{
+  "theme": "system",
+  "ignored_customers": ["MITAC COMPUTERKUNSHAN COLTD"],
+  "customer_aliases": {},
+  "fcst_customer_aliases": {},
+  "custom_groups": []
+}
+```
+
+- `theme`: `"light"` / `"dark"` / `"system"` (default)
+- `ignored_customers`: customer names (any casing/punctuation) to drop entirely from both the
+  Performance Report and FCST pipelines; defaults to the legacy `EXCLUDED_CUSTOMERS` set
+- `customer_aliases` / `fcst_customer_aliases`: user overrides layered on top of `aliases.json`'s
+  `customer` / `fcst_customer` sections
+- `custom_groups`: extra "Others"-style buckets (e.g. `"Others - EMEA Distributors"`) that unmatched
+  FCST customers can be assigned to instead of the default `{sheet}_Others`
+- Any change here invalidates the relevant `@st.cache_data` caches immediately (`utils._rules_key()`
+  and `fcst_loader.load_fcst()` both fold in a hash of the current settings)
+
+### Excluded Customers — default source
 
 ```python
+# utils.py — DEFAULT_SETTINGS["ignored_customers"] seeds from this constant
 EXCLUDED_CUSTOMERS = {"MITAC COMPUTERKUNSHAN COLTD"}  # normalized form, no punctuation
 ```
+
+This is only the shipped **default** for `settings.json`'s `ignored_customers` list — the actual
+filtering happens once, inside `load_single_file()` / `load_historical_csv()` /
+`fcst_loader._parse_sheet()`, using whatever is currently in `settings.json`. End users manage the
+list from **⚙️ Settings ▸ Customer Ignore List**, which also shows how many rows are being excluded.
 
 ---
 
@@ -227,6 +269,24 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 - Top N customers with FY Forecast and Achievement%
 - **Customer Drill-Down:** per-customer blended revenue chart + FY Forecast KPIs + category/QTY/PN detail
 
+### Settings
+UI-based configuration, persisted to `app/settings.json` and effective immediately (no restart,
+no editing JSON by hand). Three sections, switched with a radio control rather than nested tabs
+(`st.tabs()` resets to its first item on the programmatic rerun each save triggers):
+
+- **🎨 Theme** — Light / Dark / System. Light/Dark apply via CSS injection immediately; a one-line
+  notice explains that a restart gives full native theming fidelity.
+- **🚫 Customer Ignore List** — add customers (from current data or free text) or remove them from
+  the ignore list; shows how many rows are currently excluded, split by Performance Report vs. FCST.
+- **🔗 Account Match** — a "Needs Mapping" table lists every unmatched FCST customer (name, sheet,
+  forecast amount) with an inline selector to assign it to an existing Performance Report customer
+  or a custom group; also supports creating/renaming/deleting custom groups and editing the plain
+  Shipping Record customer-name aliases, with validation warnings for self-referencing or dangling
+  mappings.
+
+Each section has its own "Reset to Default" button, plus a "Reset ALL Settings" button at the
+bottom (with confirmation).
+
 ---
 
 ## Troubleshooting
@@ -237,7 +297,7 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 | Missing columns error | Check required column names match exactly |
 | Historical years missing from selector | Re-run `scripts/merge_historical.py` to regenerate `historical.csv` |
 | FCST not appearing | Ensure current year selected + `.xlsx` exists in `data/FCST/` |
-| FCST customer warnings | Add mapping to `aliases.json` → `fcst_customer` section |
+| FCST customer warnings | Assign the customer from **⚙️ Settings ▸ Account Match ▸ Needs Mapping** (no restart needed); developers can also add a shipped default to `aliases.json` → `fcst_customer` |
 | Name not normalizing | Check alias key is in normalized form; restart app after editing |
 | Build fails | Run `pip install -r requirements.txt` first |
 | CI build fails on tag push | Open the **Actions** tab → the failed **Build Windows EXE** / **Build macOS App** run and check the failed step's log |
@@ -259,6 +319,15 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 ## Change Log
 
 ### Unreleased
+- New **⚙️ Settings** tab: Theme (Light/Dark/System), Customer Ignore List, and Account Match
+  (FCST ↔ Performance Report customer mapping with custom groups), all persisted to the new
+  `app/settings.json` and effective immediately — see [Settings](#settings) and
+  [User Settings — `app/settings.json`](#user-settings--appsettingsjson)
+- `EXCLUDED_CUSTOMERS` migrated from a hardcoded constant to a `settings.json`-backed, user-editable
+  ignore list; filtering now happens once, inside the loaders themselves, for both the Performance
+  Report and FCST pipelines
+- `aliases.json`'s `customer` / `fcst_customer` sections can now be extended/overridden per-user via
+  `settings.json` without editing the shipped file
 - macOS (Apple Silicon) packaging: `build-mac.sh` now produces a real arm64 `SalesReportTool.app`
   (unsigned), with `assets/app.icns` generated from `assets/app.ico`
 - New `build-macos.yml` workflow: `macos-14` runner, attaches `SalesReportTool-macOS-arm64.zip`
@@ -303,4 +372,4 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 ---
 
-*For internal use. Last Updated: 2026-09-14*
+*For internal use. Last Updated: 2026-09-15*

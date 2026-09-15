@@ -21,9 +21,10 @@ data/
 | 原始碼開發 | repo 內的 `data/` |
 
 `.app` bundle 為唯讀，launcher 每次啟動會把 bundle 內的 `app/` 鏡射到
-`~/Library/Application Support/SalesReportTool/app`（保留 `overrides.json`），並從該副本啟動
+`~/Library/Application Support/SalesReportTool/app`（保留 `overrides.json` 與
+`settings.json`，見 `launcher.py` 的 `USER_STATE_FILES`），並從該副本啟動
 Streamlit。因此 `utils.py` 既有的 `DATA_DIR = APP_DIR.parent / "data"` 與
-`OVERRIDES_FILE` 不需任何修改就會落在可寫路徑。
+`OVERRIDES_FILE` / `SETTINGS_FILE` 不需任何修改就會落在可寫路徑。
 
 ### 初次遷移
 執行 `python scripts/merge_historical.py` 將舊版 `data/{year}/` 年份資料夾合併為 `historical.csv`，
@@ -81,6 +82,87 @@ DES_RULES（修改時需同步更新 `utils.py` 頂部字典）：
 
 ---
 
+## 使用者設定（⚙️ Settings tab / settings.json）
+
+第 4 個主 tab（順序固定在 Company Dashboard 之後），讓一般使用者透過 UI 修改設定，不需編輯
+程式碼或 JSON。三個子區塊用 `st.radio`（非 `st.tabs`）切換——因為每次存檔都呼叫
+`st.rerun()`，`st.tabs()` 在 programmatic rerun 後會重置回第一個分頁，改用帶 `key` 的
+`st.radio` 才能保留使用者所在的子區塊。
+
+### `app/settings.json`
+與 `overrides.json` 同等級的使用者可寫檔案：macOS 打包版的 `app/` 鏡射步驟會保留它
+（`launcher.py` 的 `USER_STATE_FILES`），**永遠不會寫回 `aliases.json`**（後者維持
+git-tracked 的出貨預設值；settings.json 在讀取時疊加在其上）。
+
+```json
+{
+  "theme": "system",
+  "ignored_customers": ["MITAC COMPUTERKUNSHAN COLTD"],
+  "customer_aliases": {},
+  "fcst_customer_aliases": {},
+  "custom_groups": []
+}
+```
+
+- `utils.load_settings()` / `save_settings()`：容錯讀取（檔案不存在或格式壞掉 → 回傳
+  schema 預設值，絕不 crash），寫入時與現有檔案內容 merge。
+- `utils.DEFAULT_SETTINGS`：schema 預設值來源；`ignored_customers` 的預設值就是舊有的
+  `EXCLUDED_CUSTOMERS`（現在只作為預設值來源，不再是獨立的第二條過濾路徑）。
+- **Cache busting**：`utils._settings_hash()` 對 `ignored_customers` /
+  `customer_aliases` / `fcst_customer_aliases` 做 hash，`_rules_key()` 回傳
+  `(DES_RULES tuple, settings_hash)`；`fcst_loader.load_fcst()` 也多帶一個
+  `settings_key` 參數。任何一項設定變更都會讓 `load_single_file()` /
+  `load_historical_csv()` / `load_fcst()`（原本 300 秒 TTL）的 `@st.cache_data`
+  立即失效重新載入，不用等 TTL 過期或重啟。
+
+### Section A — Theme
+Light / Dark / System（預設 System）。`utils.inject_theme_css()`：Light/Dark 透過
+`st.markdown()` 注入 CSS 覆蓋 `.stApp` 背景／文字色，當下 session 立即生效，並顯示一行
+提示「重新啟動可套用完整原生主題」；System 不注入任何 CSS。
+
+### Section B — Customer Ignore List
+- 只用 Customer Name（normalized：去標點、大寫）比對，不支援 Part Number / sheet 層級。
+- **單一過濾路徑**：實際過濾邏輯是 `utils._apply_ignore_list()`，在
+  `load_single_file()` / `load_historical_csv()` 回傳前執行；FCST 端在
+  `fcst_loader._parse_sheet()` 內對 `normalize_fcst_customer()` 解析後的名稱比對。
+  app.py 不再對 `all_df` 做任何 `EXCLUDED_CUSTOMERS` 二次過濾。
+- 兩邊都會統計被排除的列數（`ignored_count` 回傳值／`fcst_loader.get_ignored_row_count()`），
+  UI 顯示合計，方便使用者 sanity-check。
+
+### Section C — Account Match（FCST ↔ Performance Report）
+Performance Report 客戶名稱為 source of truth。`fcst_loader.normalize_fcst_customer()`
+查找順序（**settings.json 疊加在 aliases.json 之上，settings 優先**）：
+1. `aliases.json` "fcst_customer" + `settings.json` "fcst_customer_aliases" —— 先 exact，
+   再 case-insensitive
+2. `aliases.json` "customer" + `settings.json` "customer_aliases"（與 Shipping Record
+   共用的 alias section）
+3. Fallback → `"{sheet}_Others"`，並記錄未匹配客戶（含 FCST sheet 名稱與 Forecast 金額，
+   供 Needs Mapping 表格使用）
+
+- **Needs Mapping** 表格：列出未匹配的 FCST 客戶名稱／Sheet／Forecast 金額，每列一個
+  inline selectbox，可指定既有 Performance Report 客戶名稱或 Custom Group，寫回
+  `settings.json` 的 `fcst_customer_aliases`。
+- **Custom Groups**（`settings.json` 的 `custom_groups`）：可建立額外「Others」式分類
+  （例如 `Others - EMEA Distributors`），可改名（連動更新所有指向該 group 的 mapping）
+  與刪除（刪除後受影響的 mapping 還原為預設 `{sheet}_Others`）。
+- 也可在此編輯 Shipping Record 的 "customer" alias section（不只 fcst_customer）。
+- 驗證（`utils.validate_alias_mappings()`）：self-reference（key 正規化後等於 value）、
+  正規化後 key 衝突、target 在目前資料／custom groups 中都找不到——以 warning 顯示，
+  不會阻擋儲存。
+
+### Reset
+每個 section 都有各自的「Reset to Default」按鈕；頁面底部另有「Reset ALL Settings」，
+需二次確認（`st.session_state["settings_confirm_reset_all"]`）。
+
+### 新增客戶 mapping / ignore 名單的優先順序
+- **一般使用者**：一律透過 UI（⚙️ Settings 頁面），寫入 `settings.json`，立即生效、
+  跨重啟與版本升級保留。
+- **開發者調整出貨預設值**：`aliases.json`（fcst_customer / customer section）或
+  `utils.DEFAULT_SETTINGS["ignored_customers"]`——這些是新安裝或使用者尚未覆寫時的初始值，
+  改完需要重新打包／發版才會生效，且不會覆寫使用者既有的 `settings.json`。
+
+---
+
 ## FCST 資料整合
 
 ### 檔案位置
@@ -98,17 +180,12 @@ DES_RULES（修改時需同步更新 `utils.py` 頂部字典）：
 FCST 的 AMT / GP 是千元，`_parse_sheet()` 在建立 record 時自動 ×1,000。QTY 不轉換。
 
 ### Customer Name Mapping
-`aliases.json` 的 "fcst_customer" section：FCST 檔案名稱 → Performance Report 正規化名稱。
+`aliases.json` 的 "fcst_customer" section（出貨預設值）+ `settings.json` 的
+`fcst_customer_aliases`（使用者透過 UI 新增／覆寫）：FCST 檔案名稱 → Performance Report
+正規化名稱。完整查找順序、Needs Mapping UI、Custom Groups 見上方
+「使用者設定（⚙️ Settings tab / settings.json）」章節。
 
-查找順序（`normalize_fcst_customer()`）：
-1. `aliases.json` "fcst_customer" 精確比對（先 exact，再 case-insensitive）
-2. `aliases.json` "customer" section（與 Shipping Record 共用）
-3. Fallback → `"{sheet_name}_Others"`（例如 `Div.1&2_All_Others`）+ 收集未匹配客戶
-
-新增客戶 mapping 時：只需在 `aliases.json` 的 "fcst_customer" section 加 entry，不需改程式碼。
 多個 FCST 名稱可對應同一個正規化名稱（如 Zonar-CDR + Zonar-Tablet → Zonar System Inc.）。
-
-未匹配客戶會在 sidebar System Info 中顯示警告，提示更新 aliases.json。
 
 ### Sidebar 選項
 `All Sheets`（預設）/ `Div.1&2_All` / `VT` / `Signify`
@@ -132,7 +209,8 @@ Dashboard 行為：
 
 ### 未匹配客戶警告位置
 `get_unmatched_customers()` 在 FCST 載入後由 Company Dashboard 呼叫，
-警告訊息直接顯示在 Dashboard 頁面頂部（非 sidebar）。
+警告訊息直接顯示在 Dashboard 頁面頂部（非 sidebar），並附連結指向
+**⚙️ Settings ▸ Account Match** 的 Needs Mapping 表格進行指派。
 
 ---
 
@@ -186,8 +264,8 @@ Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
   key，避免 Excel 更新後 index 偏移。跨 session / 重啟保留。
   macOS 打包版寫入 Application Support 內的鏡射副本，升級 `.app` 時會被保留（其餘 `app/`
   檔案每次啟動從 bundle 更新）。
-- **Cache busting**: DES_RULES 變更時透過 _rules_key() 自動使
-  @st.cache_data 失效。
+- **Cache busting**: DES_RULES 變更時透過 `_rules_key()` 自動使 `@st.cache_data` 失效
+  （settings 相關的 cache busting 見下方「Settings cache busting」）。
 - **launcher 架構（v3.6+）**: 父 process 持有 pystray system tray / menu bar icon（主執行緒
   blocking），子 process 執行 Streamlit，stdout/stderr 導入 log 檔。
   browser open + server ready 偵測在 daemon thread 執行。
@@ -205,34 +283,55 @@ Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
   macOS 可替換 `~/Library/Application Support/SalesReportTool/app/` 下的檔案（注意下次啟動
   會被 bundle 內容覆蓋）。
 - **FCST aliases cache**: `_load_fcst_customer_aliases()` 使用 module-level
-  `_ALIASES_CACHE`，每個 process 只讀一次 aliases.json。
+  `_ALIASES_CACHE`，每個 process 只讀一次 aliases.json；`settings.json` 的覆蓋值則每次
+  即時讀取（不快取），確保 UI 存檔後立即生效。
+- **settings.json**: 與 `overrides.json` 同機制的使用者設定檔（theme / ignore list /
+  account match aliases / custom groups）。schema 預設值定義在 `utils.DEFAULT_SETTINGS`，
+  容錯讀取（缺檔／壞檔 → 預設值，不 crash），永遠不寫回 `aliases.json`。macOS 打包版由
+  launcher 的 `USER_STATE_FILES` 保留。
+- **Settings cache busting**: `_settings_hash()` 併入 `_rules_key()`，
+  `fcst_loader.load_fcst()` 多帶一個 `settings_key` 參數，讓 ignore list / alias
+  mapping 的變更立即讓 Performance Report、Historical、FCST 三邊的 cache 失效。
+- **Settings 子導覽用 st.radio 而非 st.tabs**: 每次存檔都呼叫 `st.rerun()`，
+  `st.tabs()` 在 programmatic rerun 後會跳回第一個分頁；改用帶 `key` 的 `st.radio`
+  才能保留使用者所在的子區塊。
 
 ---
 
 ## 目前版本
 
-v3.6（最新）— 資料夾結構重構（Over the Years / Current Year）。
+v3.9（最新，已發版）— Windows 打包硬化，降低防毒軟體誤判（見 README Change Log）。
+
+已合併（待下個 tag 發版）：⚙️ Settings tab（Theme / Customer Ignore List /
+Account Match）+ `settings.json` 持久化設定，settings hash 併入快取失效機制；
+macOS（Apple Silicon）打包與發版流程 — `build-mac.sh` 產出 arm64 `.app`、
+新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物。
+
+v3.6 — 資料夾結構重構（Over the Years / Current Year）。
 
 v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
-
-未發版：macOS（Apple Silicon）打包與發版流程 — `build-mac.sh` 產出 arm64 `.app`、
-新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物。
 
 ### 核心模組
 | 檔案 | 職責 |
 |------|------|
-| `app.py` | Streamlit UI、tab 邏輯、FCST/Budget blend 觸發、Customer Drill-Down FCST |
-| `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備 |
+| `app.py` | Streamlit UI、tab 邏輯（含 ⚙️ Settings）、FCST/Budget blend 觸發、Customer Drill-Down FCST |
+| `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備、Settings 讀寫（`load_settings`/`save_settings`） |
 | `charts.py` | Altair 圖表函式（Actual / Forecast / Budget 三線並呈） |
-| `fcst_loader.py` | FCST Excel 解析、blend、Budget aggregation、customer name mapping |
-| `launcher.py` | 打包後入口；tray icon、單一實例、log、Windows/macOS 路徑分歧 |
+| `fcst_loader.py` | FCST Excel 解析、blend、Budget aggregation、customer name mapping（aliases.json + settings.json 疊加） |
+| `launcher.py` | 打包後入口；tray icon、單一實例、log、Windows/macOS 路徑分歧、`overrides.json`/`settings.json` 保留 |
 
 ---
 
 ## 常見工作模式
 
-- 修改分類規則 → 編輯 `utils.py` 內的 `DES_RULES`，並同步更新 Notion 對照表
-- 新增 FCST 客戶 mapping → 編輯 `aliases.json` 的 "fcst_customer" section
+- 修改分類規則 → 編輯 `utils.py` 內的 `DES_RULES`，並同步更新 Notion 對照表（DES_RULES
+  不在 Settings UI 範圍內，仍為程式碼層級設定）
+- 忽略特定客戶 → **一般使用者**透過 UI ⚙️ Settings ▸ Customer Ignore List；開發者調整
+  出貨預設值則編輯 `utils.py` 的 `DEFAULT_SETTINGS["ignored_customers"]`（= 原
+  `EXCLUDED_CUSTOMERS`）
+- 新增 FCST 客戶 mapping → **一般使用者**透過 UI ⚙️ Settings ▸ Account Match（Needs
+  Mapping 表格 inline 指派，寫入 `settings.json`，立即生效）；開發者調整出貨預設值則編輯
+  `aliases.json` 的 "fcst_customer" section
 - 新增 FCST Sheet → `FCST_SHEETS` 加 entry + app.py sidebar radio 加選項
 - 新功能開發（macOS/Linux）→ `./run.sh`（或 `py -m streamlit run app/app.py`）
 - 出貨給使用者 → push `vX.Y.Z` tag，GitHub Actions 同時產生 Windows `.exe` zip 與
