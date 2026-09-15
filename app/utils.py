@@ -67,23 +67,70 @@ def get_latest_xlsx(year_dir: Path) -> Path | None:
 
 
 # ── Overrides ─────────────────────────────────────────────────────
+_MISSING_KEY_TOKENS = {"", "nan", "NaN", "None"}
+
+
+def override_key(customer, part_number, month, des) -> tuple[str, str, str, str]:
+    """Normalize an override key: every field -> str, stripped, '' if missing."""
+    def _norm(v) -> str:
+        if v is None:
+            return ""
+        try:
+            if pd.isna(v):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        s = str(v).strip()
+        return "" if s in _MISSING_KEY_TOKENS else s
+    return (_norm(customer), _norm(part_number), _norm(month), _norm(des))
+
+
+def override_key_series(df: pd.DataFrame) -> pd.Series:
+    """Vectorized equivalent of override_key() for an entire DataFrame."""
+    def _clean(col: pd.Series) -> pd.Series:
+        s = col.astype(str).str.strip()
+        bad = col.isna() | s.isin(_MISSING_KEY_TOKENS)
+        return s.mask(bad, "")
+
+    cust = _clean(df["Customer Name"])
+    pn = _clean(df["Part Number"])
+    month = _clean(df["Month"])
+    des = _clean(df["DES"]) if "DES" in df.columns else pd.Series("", index=df.index)
+    return pd.Series(list(zip(cust, pn, month, des)), index=df.index)
+
+
 def save_overrides(ov):
-    try:
-        with open(OVERRIDES_FILE, "w", encoding="utf-8") as f:
-            json.dump([[list(k), v] for k, v in ov.items()], f,
-                      ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """Keys must already be normalized via override_key(). Raises on failure
+    (e.g. a non-serializable value) so bugs surface during development instead
+    of silently writing non-standard NaN into the file."""
+    with open(OVERRIDES_FILE, "w", encoding="utf-8") as f:
+        json.dump([[list(k), v] for k, v in ov.items()], f,
+                  ensure_ascii=False, indent=2, allow_nan=False)
 
 
 def load_overrides():
     try:
-        if os.path.exists(OVERRIDES_FILE):
-            with open(OVERRIDES_FILE, encoding="utf-8") as f:
-                return {tuple(row[0]): row[1] for row in json.load(f)}
+        if not os.path.exists(OVERRIDES_FILE):
+            return {}
+        with open(OVERRIDES_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        migrated = {}
+        changed = False
+        for row in raw:
+            key = tuple(row[0])
+            new_key = override_key(*key)
+            if new_key != key:
+                changed = True
+            migrated[new_key] = row[1]
     except Exception:
-        pass
-    return {}
+        return {}
+
+    if changed:
+        try:
+            save_overrides(migrated)
+        except Exception:
+            pass
+    return migrated
 
 
 # ── User-facing Settings (theme / ignore list / account match) ─────

@@ -18,6 +18,7 @@ from utils import (
     DATA_DIR, CAT_ORDER, _rules_key, _normalize_name,
     HISTORICAL_CSV, scan_current_year_folder,
     load_single_file, load_historical_csv, load_overrides, save_overrides,
+    override_key, override_key_series,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
     sorted_cats, fmt, show_bycat,
@@ -143,23 +144,18 @@ total_ignored_rows = historical_ignored + current_ignored
 if "others_overrides" not in st.session_state:
     st.session_state["others_overrides"] = load_overrides()
 
+st.session_state["unmatched_overrides"] = []
 if st.session_state["others_overrides"]:
     all_df = all_df.copy()
-    for (cust, pn, month, des), new_cat in st.session_state["others_overrides"].items():
-        if "DES" in all_df.columns:
-            mask = (
-                (all_df["Customer Name"] == cust)
-                & (all_df["Part Number"] == pn)
-                & (all_df["Month"] == month)
-                & (all_df["DES"] == des)
-            )
-        else:
-            mask = (
-                (all_df["Customer Name"] == cust)
-                & (all_df["Part Number"] == pn)
-                & (all_df["Month"] == month)
-            )
-        all_df.loc[mask, "Category"] = new_cat
+    _override_key_col = override_key_series(all_df)
+    _override_mapped = _override_key_col.map(st.session_state["others_overrides"])
+    _override_mask = _override_mapped.notna()
+    all_df.loc[_override_mask, "Category"] = _override_mapped[_override_mask]
+    _override_present_keys = set(_override_key_col)
+    st.session_state["unmatched_overrides"] = [
+        k for k in st.session_state["others_overrides"]
+        if k not in _override_present_keys
+    ]
 
 # ?? Sales Person filter (sidebar) ????????????????????????????????
 _sp_visible_custs: set[str] = set()
@@ -229,6 +225,12 @@ with st.sidebar.expander("ℹ️ System Info", expanded=False):
             "Assigned to first match."
         )
         st.dataframe(pd.DataFrame(all_ambiguous), use_container_width=True)
+    if st.session_state.get("unmatched_overrides"):
+        st.warning(
+            f"{len(st.session_state['unmatched_overrides'])} saved category "
+            "override(s) matched 0 rows in the current data (the underlying "
+            "row may no longer exist)."
+        )
 
 
 # ?? YoY comparison data (for Dashboard) ??????????????????????????
@@ -369,21 +371,22 @@ with main_tab1:
                 f"⚠️ Others ({len(_others)} row(s)) - review & reassign category"
             ):
                 for _i, _row in _others.iterrows():
+                    _ok = override_key(
+                        _row["Customer Name"],
+                        _row["Part Number"],
+                        _row["Month"],
+                        _row["DES"] if _has_des else "",
+                    )
                     _c1, _c2 = st.columns([4, 1])
                     with _c1:
                         _des_str = f" | DES: {_row['DES']}" if _has_des else ""
+                        _pn_display = _ok[1] if _ok[1] else "(no P/N)"
                         st.markdown(
-                            f"`{_row['Part Number']}`{_des_str}&nbsp;&nbsp;"
+                            f"`{_pn_display}`{_des_str}&nbsp;&nbsp;"
                             f"Month: **{_row['Month']}** | "
                             f"AMT: {int(_row['SALES Total AMT']):,}"
                         )
                     with _c2:
-                        _ok = (
-                            _row["Customer Name"],
-                            _row["Part Number"],
-                            _row["Month"],
-                            _row["DES"] if _has_des else "",
-                        )
                         _cur = st.session_state["others_overrides"].get(
                             _ok, "Others (keep)"
                         )
@@ -393,7 +396,7 @@ with main_tab1:
                             "Reassign",
                             _override_opts,
                             index=_override_opts.index(_cur),
-                            key=f"override_{_i}_{'__'.join(str(x) for x in _ok)}",
+                            key=f"override_{'__'.join(_ok)}",
                             label_visibility="collapsed",
                         )
                         if _choice != "Others (keep)":
@@ -405,6 +408,16 @@ with main_tab1:
                 if st.session_state["others_overrides"]:
                     st.info(
                         "Overrides updated; press **▶ Run** to apply them to the report."
+                    )
+                if st.session_state.get("unmatched_overrides"):
+                    _unmatched_str = "; ".join(
+                        "(" + ", ".join(x if x else "∅" for x in k) + ")"
+                        for k in st.session_state["unmatched_overrides"]
+                    )
+                    st.warning(
+                        f"⚠️ {len(st.session_state['unmatched_overrides'])} saved "
+                        "override(s) matched **0 rows** in the current data (the "
+                        f"underlying row may no longer exist): {_unmatched_str}"
                     )
 
         st.download_button(
