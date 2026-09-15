@@ -1,6 +1,7 @@
 """utils.py — Data loading, cleaning, classification, and report helpers."""
 
 import functools
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,7 @@ CURRENT_YEAR_DIR = DATA_DIR / "Current Year"
 HISTORICAL_CSV = HISTORICAL_DIR / "historical.csv"
 HISTORICAL_PARQUET = HISTORICAL_DIR / "historical.parquet"
 OVERRIDES_FILE = str(APP_DIR / "overrides.json")
+SETTINGS_FILE = str(APP_DIR / "settings.json")
 
 # Translation table used to strip punctuation during name normalization.
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
@@ -84,6 +86,116 @@ def load_overrides():
     return {}
 
 
+# ── User-facing Settings (theme / ignore list / account match) ─────
+# Default source for the ignore list; settings.json overrides this default.
+DEFAULT_SETTINGS = {
+    "theme": "system",
+    "ignored_customers": sorted(EXCLUDED_CUSTOMERS),
+    "customer_aliases": {},
+    "fcst_customer_aliases": {},
+    "custom_groups": [],
+}
+
+
+def load_settings() -> dict:
+    """Load app/settings.json layered over schema defaults.
+
+    Tolerant of a missing or corrupt file (falls back to defaults, never
+    raises). Unknown keys or keys with the wrong type are ignored.
+    """
+    settings = {
+        k: (list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v)
+        for k, v in DEFAULT_SETTINGS.items()
+    }
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key, default_val in DEFAULT_SETTINGS.items():
+                    val = data.get(key)
+                    if val is not None and isinstance(val, type(default_val)):
+                        settings[key] = val
+    except Exception:
+        pass
+    return settings
+
+
+def save_settings(settings: dict) -> None:
+    """Persist *settings* to app/settings.json (merged onto the current file)."""
+    try:
+        merged = load_settings()
+        merged.update({k: v for k, v in settings.items() if k in DEFAULT_SETTINGS})
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_shipped_aliases(kind: str) -> dict:
+    """Public accessor for the read-only aliases shipped in app/aliases.json."""
+    return dict(_load_aliases(kind))
+
+
+def validate_alias_mappings(mapping: dict, valid_targets: set) -> list:
+    """Return human-readable warnings for an alias/mapping dict.
+
+    Checks for: self-referencing mappings (key normalizes to the same value
+    as its target), duplicate keys that collide after normalization with
+    conflicting targets, and targets that don't exist in *valid_targets*.
+    """
+    warnings = []
+    seen_norm_keys = {}
+    norm_valid_targets = {_normalize_name(t, upper=True) for t in valid_targets}
+    for key, value in mapping.items():
+        norm_key = _normalize_name(key, upper=True)
+        norm_val = _normalize_name(value, upper=True)
+        if norm_key == norm_val:
+            warnings.append(f"Self-referencing mapping: '{key}' → '{value}'")
+        if norm_key in seen_norm_keys and seen_norm_keys[norm_key] != value:
+            warnings.append(
+                f"Duplicate key after normalization: '{key}' collides with "
+                f"another entry mapping to a different target"
+            )
+        seen_norm_keys[norm_key] = value
+        if valid_targets and norm_val not in norm_valid_targets:
+            warnings.append(f"Target '{value}' (for '{key}') not found in current data or groups")
+    return warnings
+
+
+def _settings_hash() -> str:
+    """Hash of the settings fields that affect loaded data, for cache busting."""
+    s = load_settings()
+    relevant = {
+        "ignored_customers": sorted(s.get("ignored_customers", [])),
+        "customer_aliases": s.get("customer_aliases", {}),
+        "fcst_customer_aliases": s.get("fcst_customer_aliases", {}),
+    }
+    blob = json.dumps(relevant, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()
+
+
+_THEME_CSS = {
+    "light": """
+        <style>
+        .stApp { background-color: #ffffff; color: #1a1a1a; }
+        </style>
+    """,
+    "dark": """
+        <style>
+        .stApp { background-color: #0e1117; color: #fafafa; }
+        </style>
+    """,
+}
+
+
+def inject_theme_css(theme: str) -> None:
+    """Apply an explicit Light/Dark theme via CSS injection. No-op for 'system'."""
+    css = _THEME_CSS.get(theme)
+    if css:
+        st.markdown(css, unsafe_allow_html=True)
+
+
 # ── Name normalization ───────────────────────────────────────────
 def _normalize_name(name, upper=True):
     """Remove punctuation, compress whitespace, unify case."""
@@ -112,10 +224,17 @@ def _load_aliases(kind):
         return {}
 
 
+def _merged_customer_aliases() -> dict:
+    """aliases.json 'customer' section with settings.json overrides layered on top."""
+    aliases = dict(_load_aliases("customer"))
+    aliases.update(load_settings().get("customer_aliases", {}))
+    return aliases
+
+
 def normalize_customer_name(name):
     """Normalize customer name with alias mapping."""
     normalized = _normalize_name(name, upper=True)
-    aliases = _load_aliases("customer")
+    aliases = _merged_customer_aliases()
     return aliases.get(normalized, normalized)
 
 
@@ -145,7 +264,7 @@ def normalize_customer_series(names):
     Unmatched names keep their normalized value (same fallback as before).
     """
     normalized = _normalize_series(names, upper=True)
-    aliases = _load_aliases("customer")
+    aliases = _merged_customer_aliases()
     return normalized.map(aliases).fillna(normalized)
 
 
@@ -161,31 +280,56 @@ def normalize_sales_person_series(names):
 
 # ── Data loading (cached) ────────────────────────────────────────
 def _rules_key():
-    """Convert DES_RULES to a hashable tuple for cache busting."""
-    return tuple((k, tuple(v)) for k, v in DES_RULES.items())
+    """Convert DES_RULES + Settings into a hashable tuple for cache busting.
+
+    Any change to the ignore list or the alias mappings edited in the
+    Settings tab must invalidate @st.cache_data results, so the settings
+    hash is folded in alongside the existing DES_RULES key.
+    """
+    return (
+        tuple((k, tuple(v)) for k, v in DES_RULES.items()),
+        _settings_hash(),
+    )
+
+
+def _apply_ignore_list(df: pd.DataFrame) -> tuple:
+    """Drop rows whose (already-normalized) Customer Name is on the ignore list.
+
+    Returns (filtered_df, ignored_row_count). Matching is on the normalized
+    (no-punctuation, uppercase) form, same as the legacy EXCLUDED_CUSTOMERS.
+    """
+    ignored = {
+        _normalize_name(c, upper=True)
+        for c in load_settings().get("ignored_customers", [])
+    }
+    if not ignored or df.empty:
+        return df, 0
+    mask = df["Customer Name"].isin(ignored)
+    ignored_count = int(mask.sum())
+    return df[~mask].copy(), ignored_count
 
 
 @st.cache_data
 def load_single_file(file_path: str, rules_key):
     """Load and clean a single .xlsx file.
-    Returns (df, nat_count, err, ambiguous, has_des, has_shipping).
+    Returns (df, nat_count, err, ambiguous, has_des, has_shipping, ignored_count).
     """
     try:
         xl = pd.ExcelFile(file_path, engine="calamine")
     except ImportError:
         xl = pd.ExcelFile(file_path)
     except Exception as e:
-        return None, 0, f"Cannot read {file_path}: {e}", [], False, False
+        return None, 0, f"Cannot read {file_path}: {e}", [], False, False, 0
     if "Actual" not in xl.sheet_names:
         return (None, 0,
                 f"'{Path(file_path).name}': 'Actual' sheet not found. "
-                f"Available: {xl.sheet_names}", [], False, False)
+                f"Available: {xl.sheet_names}", [], False, False, 0)
     raw = xl.parse("Actual")
     missing = [c for c in REQUIRED_COLS if c not in raw.columns]
     if missing:
         return (None, 0,
                 f"'{Path(file_path).name}': Missing columns: {missing}",
-                [], False, False)
+                [], False, False, 0)
 
     has_des = "DES" in raw.columns
     has_sp = "SALE_Person" in raw.columns
@@ -217,7 +361,7 @@ def load_single_file(file_path: str, rules_key):
         "SIGNIFY": "Signify",
     }
     cust_upper = df["Customer Name"].str.strip().str.upper()
-    customer_aliases = _load_aliases("customer")
+    customer_aliases = _merged_customer_aliases()
     cust_upper = cust_upper.map(customer_aliases).fillna(cust_upper)
     customer_cat = cust_upper.map(CUSTOMER_CATEGORY_MAP)
 
@@ -270,7 +414,8 @@ def load_single_file(file_path: str, rules_key):
         df["Part Number"].astype(str).str.strip()
         .replace({"None": "", "nan": "", "NaN": ""})
     )
-    return df, nat_count, None, ambiguous, has_des, has_shipping
+    df, ignored_count = _apply_ignore_list(df)
+    return df, nat_count, None, ambiguous, has_des, has_shipping, ignored_count
 
 
 def _try_read_csv_with_encodings(file_path: str, encodings):
@@ -293,7 +438,7 @@ def _try_read_csv_with_encodings(file_path: str, encodings):
 def load_historical_csv(file_path: str, rules_key):
     """Load data/Over the Years/historical.csv (or its Parquet sibling).
     Applies the same cleaning pipeline as load_single_file().
-    Returns (df, nat_count, err, ambiguous, has_des, has_shipping).
+    Returns (df, nat_count, err, ambiguous, has_des, has_shipping, ignored_count).
 
     For faster cold-start loading, a sibling ``historical.parquet`` is used
     when present; otherwise the multi-encoding CSV reader is used.
@@ -308,13 +453,13 @@ def load_historical_csv(file_path: str, rules_key):
                 ["utf-8-sig", "utf-8", "cp950", "cp936", "latin1"],
             )
     except Exception as e:
-        return None, 0, f"Cannot read historical data: {e}", [], False, False
+        return None, 0, f"Cannot read historical data: {e}", [], False, False, 0
 
     missing = [c for c in REQUIRED_COLS if c not in raw.columns]
     if missing:
         return (None, 0,
                 f"historical.csv: Missing columns: {missing}",
-                [], False, False)
+                [], False, False, 0)
 
     has_des = "DES" in raw.columns
     has_sp = "SALE_Person" in raw.columns
@@ -344,7 +489,7 @@ def load_historical_csv(file_path: str, rules_key):
         "SIGNIFY": "Signify",
     }
     cust_upper = df["Customer Name"].str.strip().str.upper()
-    customer_aliases = _load_aliases("customer")
+    customer_aliases = _merged_customer_aliases()
     cust_upper = cust_upper.map(customer_aliases).fillna(cust_upper)
     customer_cat = cust_upper.map(CUSTOMER_CATEGORY_MAP)
 
@@ -396,7 +541,8 @@ def load_historical_csv(file_path: str, rules_key):
         df["Part Number"].astype(str).str.strip()
         .replace({"None": "", "nan": "", "NaN": ""})
     )
-    return df, nat_count, None, ambiguous, has_des, has_shipping
+    df, ignored_count = _apply_ignore_list(df)
+    return df, nat_count, None, ambiguous, has_des, has_shipping, ignored_count
 
 
 # ── Report helpers ────────────────────────────────────────────────

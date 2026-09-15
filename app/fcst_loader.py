@@ -23,6 +23,8 @@ import streamlit as st
 from pathlib import Path
 from typing import Optional
 
+import utils
+
 # ── Configuration ─────────────────────────────────────────
 
 FCST_FOLDER = "FCST"
@@ -51,6 +53,8 @@ MONTH_INDEX = {m: i + 1 for i, m in enumerate(MONTHS)}
 _ALIASES_CACHE: Optional[dict] = None
 _FCST_CANONICAL_CACHE: Optional[dict] = None
 _unmatched_customers: set[tuple[str, str]] = set()
+_unmatched_amounts: dict[tuple[str, str], float] = {}
+_ignored_row_count: int = 0
 
 
 def _load_fcst_customer_aliases() -> dict:
@@ -86,18 +90,36 @@ def _normalize_fcst_name(name: str) -> str:
     return name.upper()
 
 
+def _merged_fcst_canonical_mapping() -> dict:
+    """aliases.json 'fcst_customer' section with settings.json overrides layered on top.
+
+    Settings-based overrides may map to either an existing Performance Report
+    customer name or a custom-group bucket name (see Settings > Account Match).
+    """
+    mapping = dict(_load_fcst_canonical_mapping())
+    mapping.update(utils.load_settings().get("fcst_customer_aliases", {}))
+    return mapping
+
+
+def _merged_fcst_customer_aliases() -> dict:
+    """aliases.json 'customer' section with settings.json overrides layered on top."""
+    aliases = dict(_load_fcst_customer_aliases())
+    aliases.update(utils.load_settings().get("customer_aliases", {}))
+    return aliases
+
+
 def normalize_fcst_customer(fcst_name: str, sheet_name: str) -> str:
     """Map a raw FCST customer name to the Performance Report canonical name.
 
     Lookup order:
-      1. aliases.json "fcst_customer" — exact match, then case-insensitive
-      2. aliases.json "customer"     — same normalization as utils.normalize_customer_name
+      1. aliases.json "fcst_customer" + settings.json overrides — exact, then case-insensitive
+      2. aliases.json "customer" + settings.json overrides     — same normalization as utils.normalize_customer_name
       3. Fallback                   — ``"{sheet_name}_Others"`` (collect unmatched)
     """
     name = str(fcst_name).strip()
 
-    # 1. aliases.json "fcst_customer" — exact
-    fcst_canonical = _load_fcst_canonical_mapping()
+    # 1. aliases.json "fcst_customer" (+ settings override) — exact
+    fcst_canonical = _merged_fcst_canonical_mapping()
     if name in fcst_canonical:
         return _normalize_fcst_name(fcst_canonical[name])
     # 1b. case-insensitive fallback
@@ -106,8 +128,8 @@ def normalize_fcst_customer(fcst_name: str, sheet_name: str) -> str:
         if k.lower() == name_lower:
             return _normalize_fcst_name(v)
 
-    # 2. aliases.json "customer"
-    aliases = _load_fcst_customer_aliases()
+    # 2. aliases.json "customer" (+ settings override)
+    aliases = _merged_fcst_customer_aliases()
     norm = _normalize_fcst_name(name)
     if norm in aliases:
         return _normalize_fcst_name(aliases[norm])
@@ -128,10 +150,28 @@ def get_unmatched_customers() -> set[tuple[str, str]]:
     return _unmatched_customers.copy()
 
 
+def get_unmatched_customer_amounts() -> dict:
+    """Return {(customer_name, sheet_name): forecast_amt} for unmatched FCST customers."""
+    global _unmatched_amounts
+    return dict(_unmatched_amounts)
+
+
 def clear_unmatched_customers():
     """Clear the unmatched customers set (call before each FCST load)."""
-    global _unmatched_customers
+    global _unmatched_customers, _unmatched_amounts
     _unmatched_customers.clear()
+    _unmatched_amounts.clear()
+
+
+def get_ignored_row_count() -> int:
+    """Rows dropped by the Settings > Customer Ignore List during the last FCST parse."""
+    global _ignored_row_count
+    return _ignored_row_count
+
+
+def clear_ignored_row_count():
+    global _ignored_row_count
+    _ignored_row_count = 0
 
 
 def find_latest_fcst_file(data_dir: str) -> Optional[str]:
@@ -149,11 +189,17 @@ def find_latest_fcst_file(data_dir: str) -> Optional[str]:
 
 
 @st.cache_data(ttl=300)
-def load_fcst(data_dir: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+def load_fcst(data_dir: str, sheet_name: Optional[str] = None, settings_key: str = "") -> pd.DataFrame:
+    """settings_key: utils._settings_hash() — passed in so edits made on the
+    Settings tab (ignore list, alias mappings) invalidate this cache immediately
+    instead of waiting out the 300s TTL.
+    """
     filepath = find_latest_fcst_file(data_dir)
     if filepath is None:
         return pd.DataFrame()
     sheets = [sheet_name] if sheet_name else FCST_SHEETS
+    clear_unmatched_customers()
+    clear_ignored_row_count()
     frames = []
     for sn in sheets:
         try:
@@ -174,7 +220,7 @@ def get_fcst_for_dashboard(
     customer: Optional[str] = None,
     sheet_name: str = "Div.1&2_All",
 ) -> pd.DataFrame:
-    df = load_fcst(data_dir, sheet_name=sheet_name)
+    df = load_fcst(data_dir, sheet_name=sheet_name, settings_key=utils._settings_hash())
     if df.empty:
         return df
     df = df[df["Period"].isin(MONTHS)].copy()
@@ -336,13 +382,22 @@ def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
         col_map.append((period, sub))
 
     # Parse data rows — MetricGroup comes from Detail column (H)
+    ignored_customers = {
+        utils._normalize_name(c, upper=True)
+        for c in utils.load_settings().get("ignored_customers", [])
+    }
     records = []
     for _, row in data_df.iterrows():
         customer = row.iloc[COL_CUSTOMER]
         if pd.isna(customer) or str(customer).strip() == "":
             continue
+        raw_customer = str(customer).strip()
         # Normalize to Performance Report canonical name (or sheet_Others bucket)
-        customer_name = normalize_fcst_customer(str(customer).strip(), sheet_name)
+        customer_name = normalize_fcst_customer(raw_customer, sheet_name)
+        if ignored_customers and customer_name in ignored_customers:
+            global _ignored_row_count
+            _ignored_row_count += 1
+            continue
         cat = row.iloc[COL_CAT] if pd.notna(row.iloc[COL_CAT]) else ""
         sales = row.iloc[COL_SALES] if pd.notna(row.iloc[COL_SALES]) else ""
 
@@ -352,6 +407,8 @@ def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
         if not metric:
             continue  # skip rows without a valid metric type
 
+        is_unmatched = (raw_customer, sheet_name) in _unmatched_customers
+        row_forecast_total = 0.0
         for col_offset, (period, sub) in enumerate(col_map):
             if not period or not sub:
                 continue
@@ -363,6 +420,8 @@ def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
             # FCST file stores AMT/GP in thousands (千元) — scale to match Shipping Record
             if metric in ("AMT", "GP"):
                 value = value * 1000
+            if metric == "AMT" and sub == "Forecast":
+                row_forecast_total += float(value)
             records.append({
                 "Customer": customer_name,
                 "Cat": str(cat).strip(),
@@ -373,6 +432,9 @@ def _parse_sheet(filepath: str, sheet_name: str) -> pd.DataFrame:
                 "SubColumn": sub,
                 "Value": value,
             })
+        if is_unmatched and metric == "AMT":
+            key = (raw_customer, sheet_name)
+            _unmatched_amounts[key] = _unmatched_amounts.get(key, 0.0) + row_forecast_total
     if not records:
         return pd.DataFrame()
     df = pd.DataFrame(records)
