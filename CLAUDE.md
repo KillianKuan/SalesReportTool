@@ -13,6 +13,18 @@ data/
     └── *.xlsx              # 最新 FCST 檔（依 mtime 自動選擇）
 ```
 
+### 資料夾實際位置（打包後）
+| 平台 | data/ 根目錄 |
+|------|-------------|
+| Windows `.exe` | exe 同層的 `data\`（未變動） |
+| macOS `.app` | `~/Library/Application Support/SalesReportTool/data/` |
+| 原始碼開發 | repo 內的 `data/` |
+
+`.app` bundle 為唯讀，launcher 每次啟動會把 bundle 內的 `app/` 鏡射到
+`~/Library/Application Support/SalesReportTool/app`（保留 `overrides.json`），並從該副本啟動
+Streamlit。因此 `utils.py` 既有的 `DATA_DIR = APP_DIR.parent / "data"` 與
+`OVERRIDES_FILE` 不需任何修改就會落在可寫路徑。
+
 ### 初次遷移
 執行 `python scripts/merge_historical.py` 將舊版 `data/{year}/` 年份資料夾合併為 `historical.csv`，
 再將當年度 xlsx 移至 `data/Current Year/`。
@@ -126,27 +138,45 @@ Dashboard 行為：
 
 ## 跨平台打包與發版（CI）
 
-開發環境為 macOS，但工具最終由同事在 Windows 執行。**PyInstaller 無法跨平台編譯**，所以要給同事用的
-Windows `.exe` 一律在 Windows runner 上透過 GitHub Actions 產生。
+開發環境為 macOS（Apple Silicon），同事在 Windows 執行工具。**PyInstaller 無法跨平台編譯**，
+所以兩個平台各自在對應的 runner 上打包，並把產物掛到**同一個** GitHub Release。
 
 ### 關鍵檔案
 | 檔案 | 用途 |
 |------|------|
-| `.github/workflows/build-windows.yml` | CI：`windows-latest` + Python 3.11，用與 build.bat 相同的 PyInstaller flags 產生 `.exe` |
+| `.github/workflows/build-windows.yml` | CI：`windows-latest` + Python 3.11，產生 `SalesReportTool-windows.zip` |
+| `.github/workflows/build-macos.yml` | CI：`macos-14`（arm64）+ Python 3.11，呼叫 `./build-mac.sh --skip-deps`，用 `ditto` 產生 `SalesReportTool-macOS-arm64.zip` |
 | `build.bat` | Windows / VM 本地打包 fallback（未變動） |
+| `build-mac.sh` | macOS arm64 `.app` 打包；**macOS PyInstaller flags 的唯一來源**，CI 也呼叫它 |
 | `run.sh` | macOS/Linux 開發 server（`streamlit run app/app.py`） |
-| `build-mac.sh` | macOS/Linux 本地 smoke-test 打包（產 host-OS 執行檔，**非** Windows .exe） |
+
+### 平台差異一覽
+| 項目 | Windows `.exe` | macOS `.app` |
+|------|----------------|--------------|
+| Log | exe 同層 `salesreport.log` | `~/Library/Logs/SalesReportTool/salesreport.log` |
+| Streamlit app | exe 同層 `app/` | `~/Library/Application Support/SalesReportTool/app`（鏡射） |
+| data/ | exe 同層 `data\` | `~/Library/Application Support/SalesReportTool/data` |
+| 圖示 | `assets/app.ico` | `assets/app.icns`（由 `.ico` 於 build 時生成，git-ignored） |
+| 致命錯誤對話框 | `MessageBoxW` | `osascript display dialog` |
+| PyInstaller | `--noconsole` | `--windowed` + `--osx-bundle-identifier` + `--target-architecture arm64` |
+
+> **原則**：`app/` 底下的程式碼完全平台無關、不得 fork；所有 `sys.platform` 分歧只寫在
+> `launcher.py`。共用的 hidden-import / collect flags 需在 `build.bat`、`build-windows.yml`、
+> `build-mac.sh` 三處同步更新。
 
 ### 發版流程（推薦）
 1. push 你的變更。
 2. 打 tag 並 push：`git tag v3.7.0 && git push origin v3.7.0`。
-3. **Build Windows EXE** workflow 在 `windows-latest` 上 build `.exe`，並自動將
-   `SalesReportTool-windows.zip` 附到對應的 GitHub Release。
-4. 同事從 Release 下載 zip → 解壓縮 → 雙擊 `SalesReportTool.exe`。
+3. 兩個 workflow 同時執行，分別把 `SalesReportTool-windows.zip` 與
+   `SalesReportTool-macOS-arm64.zip` 附到同一個 GitHub Release。
+4. 使用者從 Release 下載對應平台的 zip。
 
 也可從 **Actions** tab 手動觸發（`workflow_dispatch`），`.zip` 會以 workflow artifact 提供下載。
 
-> CI workflow 的 PyInstaller flags 與 `build.bat` 保持一致；修改打包參數時需兩邊同步更新。
+### 簽章 / 公證
+目前不做：`.app` 未簽章，首次開啟需右鍵 → **Open**（或
+`xattr -dr com.apple.quarantine`）。`build-macos.yml` 內有標記好的 TODO 位置，取得
+Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
 
 ---
 
@@ -154,20 +184,26 @@ Windows `.exe` 一律在 Windows runner 上透過 GitHub Actions 產生。
 
 - **overrides.json**: Key 為 (Customer Name, Part Number, Month, DES) 的複合
   key，避免 Excel 更新後 index 偏移。跨 session / 重啟保留。
+  macOS 打包版寫入 Application Support 內的鏡射副本，升級 `.app` 時會被保留（其餘 `app/`
+  檔案每次啟動從 bundle 更新）。
 - **Cache busting**: DES_RULES 變更時透過 _rules_key() 自動使
   @st.cache_data 失效。
-- **launcher 架構（v3.6+）**: 父 process 持有 pystray system tray icon（主執行緒
-  blocking），子 process 執行 Streamlit（無 CREATE_NO_WINDOW，console 可見方便除錯）。
+- **launcher 架構（v3.6+）**: 父 process 持有 pystray system tray / menu bar icon（主執行緒
+  blocking），子 process 執行 Streamlit，stdout/stderr 導入 log 檔。
   browser open + server ready 偵測在 daemon thread 執行。
+- **平台分歧集中於 launcher.py**: log 路徑、`app/` 鏡射、data 資料夾建立與 seed、圖示格式、
+  錯誤對話框、開啟 log 的方式皆由 `IS_WINDOWS` / `IS_MACOS` 與 `macos_bundle_dir()` 判斷。
 - **Single-instance 保護**: 啟動時檢查 `TEMP/salesreport.lock`（JSON 含 PID + port）。
-  若 PID 存活 → 開瀏覽器到已執行的 instance + sys.exit；若 PID 已死 → 刪除 stale lock。
+  以 port 是否仍在服務判斷存活（`os.kill(pid, 0)` 在 Windows 不可靠）：port 有回應 →
+  開瀏覽器到已執行的 instance + sys.exit；否則刪除 stale lock。此邏輯 Windows/macOS 共用。
   atexit + SIGTERM/SIGINT handler 確保 lock 在正常/異常結束時都會清除。
-- **System tray**: pystray + Pillow；優先載入 assets/app.ico，fallback 為程式生成藍色圖示。
-  選單：Open Browser / Quit。啟動時顯示 notify 通知。
+- **System tray**: pystray + Pillow；macOS 優先載入 `assets/app.icns`，Windows 優先 `app.ico`，
+  fallback 為程式生成的藍色長條圖圖示。選單：Open Browser / Open Log / Quit。
 - **--server.headless true**: launcher.py 控制開瀏覽器時機（偵測 port 就緒
   再開），不依賴 Streamlit 預設行為。
-- **更新 app.py 不需重新打包**: 直接替換 dist/SalesReportTool/app/ 下的檔案即可。
-  適用：app.py、charts.py、fcst_loader.py（小修正不需重新 build）。
+- **更新 app.py 不需重新打包**: Windows 直接替換 `dist/SalesReportTool/app/` 下的檔案；
+  macOS 可替換 `~/Library/Application Support/SalesReportTool/app/` 下的檔案（注意下次啟動
+  會被 bundle 內容覆蓋）。
 - **FCST aliases cache**: `_load_fcst_customer_aliases()` 使用 module-level
   `_ALIASES_CACHE`，每個 process 只讀一次 aliases.json。
 
@@ -179,6 +215,9 @@ v3.6（最新）— 資料夾結構重構（Over the Years / Current Year）。
 
 v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 
+未發版：macOS（Apple Silicon）打包與發版流程 — `build-mac.sh` 產出 arm64 `.app`、
+新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物。
+
 ### 核心模組
 | 檔案 | 職責 |
 |------|------|
@@ -186,6 +225,7 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 | `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備 |
 | `charts.py` | Altair 圖表函式（Actual / Forecast / Budget 三線並呈） |
 | `fcst_loader.py` | FCST Excel 解析、blend、Budget aggregation、customer name mapping |
+| `launcher.py` | 打包後入口；tray icon、單一實例、log、Windows/macOS 路徑分歧 |
 
 ---
 
@@ -195,9 +235,10 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 - 新增 FCST 客戶 mapping → 編輯 `aliases.json` 的 "fcst_customer" section
 - 新增 FCST Sheet → `FCST_SHEETS` 加 entry + app.py sidebar radio 加選項
 - 新功能開發（macOS/Linux）→ `./run.sh`（或 `py -m streamlit run app/app.py`）
-- 出貨給使用者 → push `vX.Y.Z` tag，GitHub Actions（`windows-latest`）自動產生 `.exe` 並附到 GitHub Release；
-  本地 `build.bat`（Windows）為 fallback
-- 本地 smoke-test 打包（macOS/Linux）→ `./build-mac.sh`（產 host-OS 執行檔，非 Windows .exe）
+- 出貨給使用者 → push `vX.Y.Z` tag，GitHub Actions 同時產生 Windows `.exe` zip 與
+  macOS arm64 `.app` zip 並附到同一個 GitHub Release；本地 `build.bat` / `./build-mac.sh` 為 fallback
+- 本地打包 macOS 版 → `./build-mac.sh`（產 `dist/SalesReportTool.app`，未簽章）
+- 修改打包參數 → `build.bat`、`build-windows.yml`、`build-mac.sh` 三處同步
 - 小修正（只改 app 層檔案）→ 直接替換 `dist/SalesReportTool/app/` 下的對應檔案
 - 年度結算（新年開始）→ 執行 `python scripts/merge_historical.py` 將舊當年度合併入 `historical.csv`，
   再將新年度 xlsx 放入 `data/Current Year/`

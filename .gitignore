@@ -1,17 +1,13 @@
 __pycache__/
-app/__pycache__/
 *.py[cod]
-
-venv/
-venv311/
+*.spec
+venv*/
 .venv/
-
-build/
 dist/
-
+build/
+*.log
+.DS_Store
 data/
 
-*.spec
-
-.DS_Store
-Thumbs.db
+# Generated from assets/app.ico by build-mac.sh
+assets/app.icns

@@ -8,7 +8,16 @@ Streamlit-based sales performance analysis tool with automatic data classificati
 
 ## Quick Start
 
-**End Users:** Double-click `SalesReportTool.exe`
+**End Users (Windows):** Double-click `SalesReportTool.exe`
+
+**End Users (macOS, Apple Silicon):**
+
+1. Download `SalesReportTool-macOS-arm64.zip` from the latest Release and unzip it.
+2. Move `SalesReportTool.app` into `/Applications`.
+3. **First launch only:** right-click the app → **Open** → **Open**. The app is unsigned, so
+   double-clicking shows a Gatekeeper warning the first time.
+4. Put your data files in `~/Library/Application Support/SalesReportTool/data/`
+   (`Over the Years/`, `Current Year/`, `FCST/` — created automatically on first launch).
 
 **Developers (macOS / Linux):**
 ```bash
@@ -24,13 +33,32 @@ pip install -r requirements.txt
 streamlit run app/app.py       # dev server
 ```
 
+### Where things live per platform
+
+| | Windows (`.exe`) | macOS (`.app`) |
+|---|---|---|
+| Data folder | `data\` next to the `.exe` | `~/Library/Application Support/SalesReportTool/data/` |
+| Log file | `salesreport.log` next to the `.exe` | `~/Library/Logs/SalesReportTool/salesreport.log` |
+| Category overrides | `app\overrides.json` | `~/Library/Application Support/SalesReportTool/app/overrides.json` |
+| Local build | `build.bat` | `./build-mac.sh` |
+| CI workflow | `build-windows.yml` | `build-macos.yml` |
+
+> A macOS `.app` bundle is read-only, so on each launch the launcher mirrors the bundled `app/`
+> folder into Application Support and runs Streamlit from there (`overrides.json` is preserved).
+> The code under `app/` is identical on both platforms; all platform differences live in
+> `launcher.py`.
+
 ---
 
 ## Build & Release
 
-Release builds are produced in **CI**, not locally. PyInstaller cannot cross-compile, so the
-distributable Windows `.exe` is always built on a Windows runner via GitHub Actions
-(`.github/workflows/build-windows.yml`).
+Release builds are produced in **CI**, not locally. PyInstaller cannot cross-compile, so each
+platform is packaged on its own runner:
+
+| Platform | Workflow | Runner | Artifact |
+|----------|----------|--------|----------|
+| Windows | `.github/workflows/build-windows.yml` | `windows-latest` | `SalesReportTool-windows.zip` |
+| macOS (Apple Silicon) | `.github/workflows/build-macos.yml` | `macos-14` (arm64) | `SalesReportTool-macOS-arm64.zip` |
 
 ### Releasing a new version (recommended)
 
@@ -40,22 +68,30 @@ distributable Windows `.exe` is always built on a Windows runner via GitHub Acti
    git tag v3.7.0
    git push origin v3.7.0
    ```
-3. The **Build Windows EXE** workflow runs on `windows-latest`, builds the `.exe`, and attaches
-   `SalesReportTool-windows.zip` to the matching GitHub Release automatically.
-4. End users download the zip from the Release, unzip, and double-click `SalesReportTool.exe`.
+3. **Both** workflows run and attach their zip to the **same** GitHub Release for that tag.
+4. End users download the zip for their platform from the Release.
 
-You can also run the workflow manually from the **Actions** tab (`workflow_dispatch`); the
+You can also run either workflow manually from the **Actions** tab (`workflow_dispatch`); the
 `.zip` is then available as a downloadable workflow artifact.
 
 ### Local builds (smoke-test only)
 
 | Platform | Command | Output |
 |----------|---------|--------|
-| Windows | `build.bat` | Distributable `dist\SalesReportTool\` (Windows / VM fallback) |
-| macOS / Linux | `./build-mac.sh` | **Host-OS** binary for local testing only — **not** a Windows `.exe` |
+| Windows | `build.bat` | `dist\SalesReportTool\` (Windows / VM fallback) |
+| macOS | `./build-mac.sh` | `dist/SalesReportTool.app` (arm64, unsigned) |
 
-> `build-mac.sh` produces a binary for whatever OS you run it on. It exists to verify the build
-> locally; distributable Windows `.exe` files must come from `build.bat` or CI.
+> `build-mac.sh` is the single source of truth for the macOS PyInstaller flags — CI calls it with
+> `--skip-deps`, so local and CI builds cannot drift apart. It generates `assets/app.icns` from
+> `assets/app.ico` on first run (git-ignored). When changing shared PyInstaller flags, update
+> `build.bat`, `build-windows.yml` and `build-mac.sh` together.
+
+### Code signing / notarization
+
+Out of scope for now: the `.app` is **unsigned**, so first launch requires right-click → **Open**
+(or `xattr -dr com.apple.quarantine /Applications/SalesReportTool.app`). `build-macos.yml`
+contains a marked hook where `codesign` + `xcrun notarytool` should be added once a Developer ID
+certificate is available.
 
 ---
 
@@ -65,8 +101,9 @@ You can also run the workflow manually from the **Actions** tab (`workflow_dispa
 SalesReportTool/
 ├── .github/
 │   └── workflows/
-│       └── build-windows.yml  # CI: build Windows .exe + attach to Release
-├── app/
+│       ├── build-windows.yml  # CI: build Windows .exe + attach to Release
+│       └── build-macos.yml    # CI: build arm64 .app + attach to same Release
+├── app/                       # Platform-agnostic Streamlit app (shared, never forked)
 │   ├── app.py              # Streamlit UI
 │   ├── charts.py           # Altair chart functions
 │   ├── fcst_loader.py      # FCST parser, blending, budget
@@ -81,9 +118,9 @@ SalesReportTool/
 │   └── FCST/               # Latest FCST xlsx (auto-selected by mtime)
 ├── scripts/
 │   └── merge_historical.py # One-time migration: year folders → historical.csv
-├── launcher.py
+├── launcher.py             # Entry point; all Windows/macOS divergence lives here
 ├── build.bat               # Windows build (fallback)
-├── build-mac.sh            # macOS/Linux local smoke-test build
+├── build-mac.sh            # macOS arm64 .app build (also used by CI)
 ├── run.sh                  # macOS/Linux dev server
 └── requirements.txt
 ```
@@ -158,6 +195,10 @@ Auto-generated via UI. Manual format:
 { "[\"Customer A\", \"PN-001\", \"2026-01\", \"desc\"]": "Tablet ACC" }
 ```
 
+On macOS the packaged app writes this file to
+`~/Library/Application Support/SalesReportTool/app/overrides.json`; it is preserved when you
+install a newer `.app`.
+
 ### Excluded Customers — `utils.py`
 
 ```python
@@ -196,11 +237,30 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 | FCST customer warnings | Add mapping to `aliases.json` → `fcst_customer` section |
 | Name not normalizing | Check alias key is in normalized form; restart app after editing |
 | Build fails | Run `pip install -r requirements.txt` first |
-| CI build fails on tag push | Open the **Actions** tab → **Build Windows EXE** run and check the failed step's log |
+| CI build fails on tag push | Open the **Actions** tab → the failed **Build Windows EXE** / **Build macOS App** run and check the failed step's log |
+
+### macOS specific
+
+| Issue | Fix |
+|-------|-----|
+| "App is damaged and can't be opened" / unidentified developer | Right-click → **Open**, or `xattr -dr com.apple.quarantine /Applications/SalesReportTool.app` |
+| Nothing happens after launch | Check `~/Library/Logs/SalesReportTool/salesreport.log` (also reachable via menu bar icon → **Open Log**) |
+| App opens but shows no data | Data must be in `~/Library/Application Support/SalesReportTool/data/` (not inside the `.app`) |
+| Want a clean slate | Delete `~/Library/Application Support/SalesReportTool/` — it is recreated on next launch |
+| `build-mac.sh` fails at `iconutil` | Run it on macOS with Xcode command line tools installed (`sips` / `iconutil` are macOS-only) |
+| Second launch does nothing visible | Single-instance protection: the running instance's browser tab is reopened instead |
 
 ---
 
 ## Change Log
+
+### Unreleased
+- macOS (Apple Silicon) packaging: `build-mac.sh` now produces a real arm64 `SalesReportTool.app`
+  (unsigned), with `assets/app.icns` generated from `assets/app.ico`
+- New `build-macos.yml` workflow: `macos-14` runner, attaches `SalesReportTool-macOS-arm64.zip`
+  to the same Release as the Windows zip on `vX.Y.Z` tags
+- `launcher.py` now resolves macOS-specific log, app and data locations under `~/Library`;
+  `app/` code remains platform-agnostic
 
 ### v3.6 (May 2026)
 - Data folder restructure: year-based `data/{year}/` replaced with `data/Over the Years/historical.csv` (all past years) + `data/Current Year/*.xlsx` (current year)
@@ -229,4 +289,4 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 ---
 
-*For internal use. Last Updated: 2026-06-18*
+*For internal use. Last Updated: 2026-09-14*
