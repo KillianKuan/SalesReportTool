@@ -2,7 +2,7 @@
 
 Streamlit-based sales performance analysis tool with automatic data classification and forecast integration.
 
-**Version:** 4.0 | **Build Date:** September 2026
+**Version:** 4.1 | **Build Date:** September 2026
 
 ---
 
@@ -40,7 +40,7 @@ streamlit run app/app.py       # dev server
 | Data folder | `data\` next to the `.exe` | `~/Library/Application Support/SalesReportTool/data/` |
 | Log file | `salesreport.log` next to the `.exe` | `~/Library/Logs/SalesReportTool/salesreport.log` |
 | Category overrides | `app\overrides.json` | `~/Library/Application Support/SalesReportTool/app/overrides.json` |
-| User settings (theme / ignore list / account match) | `app\settings.json` | `~/Library/Application Support/SalesReportTool/app/settings.json` |
+| User settings (ignore list / account match) | `app\settings.json` | `~/Library/Application Support/SalesReportTool/app/settings.json` |
 | Local build | `build.bat` | `./build-mac.sh` |
 | CI workflow | `build-windows.yml` | `build-macos.yml` |
 
@@ -108,13 +108,15 @@ SalesReportTool/
 │       ├── build-windows.yml  # CI: build Windows .exe + attach to Release
 │       └── build-macos.yml    # CI: build arm64 .app + attach to same Release
 ├── app/                       # Platform-agnostic Streamlit app (shared, never forked)
-│   ├── app.py              # Streamlit UI
+│   ├── app.py              # Streamlit UI, sidebar page navigation
 │   ├── charts.py           # Altair chart functions
+│   ├── components.py       # Neutral kpi_card() / card_title() UI helpers
+│   ├── palette.py          # Fixed (non-theme) chart mark + KPI delta colors
 │   ├── fcst_loader.py      # FCST parser, blending, budget
-│   ├── utils.py            # Data loading, classification, KPIs
+│   ├── utils.py            # Data loading, classification, KPIs, layout CSS
 │   ├── aliases.json        # Name alias mappings (shipped defaults, git-tracked)
 │   ├── overrides.json      # Category overrides (auto-generated)
-│   └── settings.json       # User settings: theme, ignore list, account match (auto-generated)
+│   └── settings.json       # User settings: ignore list, account match (auto-generated)
 ├── data/
 │   ├── Over the Years/
 │   │   └── historical.csv  # All past years merged (run scripts/merge_historical.py)
@@ -180,9 +182,9 @@ Valid categories: `Tablet` / `CDR` / `Tablet ACC` / `CDR ACC` / `AI_SW` / `Signi
 
 ## Configuration
 
-Most day-to-day configuration — theme, ignored customers, and FCST↔Performance Report account
-mapping — is meant to be done from the **⚙️ Settings** tab in the app (see
-[Tabs & Features](#tabs--features)), which writes to `app/settings.json`. The files below are the
+Most day-to-day configuration — ignored customers and FCST↔Performance Report account
+mapping — is meant to be done from the **⚙️ Settings** page in the app (see
+[Pages & Features](#pages--features)), which writes to `app/settings.json`. The files below are the
 underlying storage and the shipped defaults that `settings.json` layers on top of.
 
 ### Name Aliases — `app/aliases.json`
@@ -214,13 +216,12 @@ install a newer `.app`.
 
 ### User Settings — `app/settings.json`
 
-Auto-generated the first time a user changes anything in the **⚙️ Settings** tab. Same
+Auto-generated the first time a user changes anything in the **⚙️ Settings** page. Same
 persistence model as `overrides.json` — user-writable, preserved across restarts and `.app`
 upgrades (see `launcher.py`'s `USER_STATE_FILES`), never committed with real data.
 
 ```json
 {
-  "theme": "system",
   "ignored_customers": ["MITAC COMPUTERKUNSHAN COLTD"],
   "customer_aliases": {},
   "fcst_customer_aliases": {},
@@ -228,7 +229,11 @@ upgrades (see `launcher.py`'s `USER_STATE_FILES`), never committed with real dat
 }
 ```
 
-- `theme`: `"light"` / `"dark"` / `"system"` (default)
+> A `settings.json` written before v4.1 may still have a `"theme"` key (the app no longer has a
+> theme system — colors come entirely from Streamlit's native light/dark theme). It's harmless:
+> `load_settings()` only reads keys present in `DEFAULT_SETTINGS`, so a legacy `theme` key is
+> silently ignored and dropped the next time settings are saved.
+
 - `ignored_customers`: customer names (any casing/punctuation) to drop entirely from both the
   Performance Report and FCST pipelines; defaults to the legacy `EXCLUDED_CUSTOMERS` set
 - `customer_aliases` / `fcst_customer_aliases`: user overrides layered on top of `aliases.json`'s
@@ -252,7 +257,14 @@ list from **⚙️ Settings ▸ Customer Ignore List**, which also shows how man
 
 ---
 
-## Tabs & Features
+## Pages & Features
+
+Navigation is a sidebar page list (`Company Dashboard` / `Performance Report` / `Shipping Record
+Search`, with `Settings` pinned at the bottom, below the collapsed `FCST` and `System Info`
+sections) rather than horizontal tabs — only the active page's content renders in the main area,
+in a bordered-card layout. The Sales Person filter at the top of the sidebar, and the FCST sheet
+picker, apply across all pages; switching pages preserves each page's own filter state (year
+selection, search text, etc.) via Streamlit session state.
 
 ### Performance Report
 Monthly sales trends, category breakdowns, GP%, YoY comparison, Excel export.
@@ -271,11 +283,9 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 
 ### Settings
 UI-based configuration, persisted to `app/settings.json` and effective immediately (no restart,
-no editing JSON by hand). Three sections, switched with a radio control rather than nested tabs
+no editing JSON by hand). Two sections, switched with a radio control rather than nested tabs
 (`st.tabs()` resets to its first item on the programmatic rerun each save triggers):
 
-- **🎨 Theme** — Light / Dark / System. Light/Dark apply via CSS injection immediately; a one-line
-  notice explains that a restart gives full native theming fidelity.
 - **🚫 Customer Ignore List** — add customers (from current data or free text) or remove them from
   the ignore list; shows how many rows are currently excluded, split by Performance Report vs. FCST.
 - **🔗 Account Match** — a "Needs Mapping" table lists every unmatched FCST customer (name, sheet,
@@ -285,7 +295,8 @@ no editing JSON by hand). Three sections, switched with a radio control rather t
   mappings.
 
 Each section has its own "Reset to Default" button, plus a "Reset ALL Settings" button at the
-bottom (with confirmation).
+bottom (with confirmation). There is no app-level theme setting — the app follows whichever
+light/dark theme is configured in Streamlit itself.
 
 ---
 
@@ -317,6 +328,34 @@ bottom (with confirmation).
 ---
 
 ## Change Log
+
+### v4.1 (September 2026)
+- **Sidebar page navigation**: the horizontal main tabs (Performance Report / Shipping Record
+  Search / Company Dashboard / Settings) were replaced with a sidebar page list — Company
+  Dashboard, Performance Report, Shipping Record Search, then the collapsed FCST and System Info
+  sections, then Settings pinned at the bottom. Only the active page renders in the main area;
+  each page's own filters keep their state when you switch pages.
+- **Removed the app-level Theme system entirely.** There is no more Light/Dark/System setting —
+  the app now relies solely on Streamlit's own native theme (configured via `.streamlit/config.toml`
+  or the viewer's own Settings menu), which already adapts colors, borders, and chart rendering to
+  light/dark automatically.
+  - Deleted `app/theme.py` (the Light/Dark design-token module), `utils.inject_theme_css()`,
+    `utils.resolve_theme_mode()`, and `charts.apply_altair_theme()`. Charts no longer take a `mode`
+    argument or register a competing Altair theme — `st.altair_chart()`'s default
+    `theme="streamlit"` now themes axes/legends/text automatically, matching the app's actual theme
+    instead of a value resolved once at startup.
+  - `kpi_card()` / `card_title()` moved to the new neutral `app/components.py`; their markup is
+    unchanged but they now use Streamlit's own `var(--text-color)` for text instead of custom
+    tokens.
+  - Fixed (non-Light/Dark) mark colors for charts and the KPI delta pills moved to the new
+    `app/palette.py` — a single color set, not a light/dark pair, since chart marks need a real
+    color and can't inherit CSS variables the way UI chrome can.
+  - `utils.inject_layout_css()` replaces `inject_theme_css()`: spacing, radius, control max-width,
+    and the sidebar's own fixed brand-green background are layout-only CSS now; card/text colors
+    are left entirely to Streamlit.
+  - Removed the `theme` key from `DEFAULT_SETTINGS` / the Settings ▸ Theme section. A
+    `settings.json` written by an older build that still has a `"theme"` key keeps loading
+    normally — the key is just ignored and dropped on next save.
 
 ### v4.0 (September 2026)
 - **UI redesign**: the visual layer was rebuilt around a single design-token module
