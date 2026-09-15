@@ -11,6 +11,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+import theme
+
 # ── Constants ─────────────────────────────────────────────────────
 REQUIRED_COLS = [
     "Customer Name", "Ship Date", "QTY",
@@ -222,25 +224,159 @@ def _settings_hash() -> str:
     return hashlib.md5(blob.encode("utf-8")).hexdigest()
 
 
-_THEME_CSS = {
-    "light": """
-        <style>
-        .stApp { background-color: #ffffff; color: #1a1a1a; }
-        </style>
-    """,
-    "dark": """
-        <style>
-        .stApp { background-color: #0e1117; color: #fafafa; }
-        </style>
-    """,
-}
+def resolve_theme_mode(theme_setting: str) -> str:
+    """Resolve the Settings theme value ('light'/'dark'/'system') to an
+    explicit 'light' or 'dark' for callers (chart color/theme registration)
+    that cannot rely on a browser-level ``prefers-color-scheme`` media query.
+    'system' defaults to 'light' here — the CSS injected by
+    inject_theme_css() still follows the OS preference for on-screen chrome.
+    """
+    return "dark" if theme_setting == "dark" else "light"
 
 
-def inject_theme_css(theme: str) -> None:
-    """Apply an explicit Light/Dark theme via CSS injection. No-op for 'system'."""
-    css = _THEME_CSS.get(theme)
-    if css:
-        st.markdown(css, unsafe_allow_html=True)
+def _css_vars_block(tokens: dict) -> str:
+    lines = [f"  --sr-{k.replace('_', '-')}: {v};" for k, v in tokens.items()]
+    return "\n".join(lines)
+
+
+def _theme_css_body(tokens_light: dict, dark_block: str = "") -> str:
+    """Build the full CSS payload given the (always-present) light token
+    block plus an optional dark-mode override block (either a static
+    ``:root[data-theme="dark"]`` rule or an ``@media`` query for 'system').
+    """
+    return f"""
+<style>
+:root {{
+{_css_vars_block(tokens_light)}
+}}
+{dark_block}
+
+.stApp {{
+    background-color: var(--sr-canvas);
+    color: var(--sr-text);
+}}
+
+[data-testid="stSidebar"] {{
+    background-color: {theme.SIDEBAR_BG};
+}}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] .stCaption,
+[data-testid="stSidebar"] .stRadio label span, [data-testid="stSidebar"] .stCheckbox label span,
+[data-testid="stSidebar"] small {{
+    color: #FFFFFF !important;
+}}
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] [data-baseweb="select"] *,
+[data-testid="stSidebar"] [data-baseweb="tag"] * {{
+    color: var(--sr-text) !important;
+}}
+
+div[data-testid="stVerticalBlockBorderWrapper"] {{
+    background-color: var(--sr-surface);
+    border: 1px solid var(--sr-border);
+    border-radius: var(--sr-radius);
+    padding: var(--sr-card-padding);
+    margin-bottom: var(--sr-section-gap);
+}}
+
+.sr-card-title {{
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sr-muted);
+    margin-bottom: 8px;
+}}
+
+.sr-kpi-card {{ margin-bottom: 4px; }}
+.sr-kpi-label {{
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sr-muted);
+    margin-bottom: 4px;
+}}
+.sr-kpi-value {{
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--sr-text);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}}
+.sr-kpi-delta {{
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+}}
+.sr-kpi-delta-pos {{ background-color: var(--sr-positive-bg); color: var(--sr-positive); }}
+.sr-kpi-delta-neg {{ background-color: var(--sr-negative-bg); color: var(--sr-negative); }}
+.sr-kpi-delta-na {{ background-color: var(--sr-muted-bg); color: var(--sr-muted); }}
+.sr-kpi-caption {{ font-size: 12px; color: var(--sr-muted); margin-top: 2px; }}
+
+.stButton > button[kind="primary"] {{
+    background-color: var(--sr-primary);
+    border-color: var(--sr-primary);
+    color: #FFFFFF;
+}}
+.stButton > button[kind="primary"]:hover {{
+    background-color: var(--sr-primary-hover);
+    border-color: var(--sr-primary-hover);
+    color: #FFFFFF;
+}}
+
+[data-testid="stTabs"] [data-testid="stTab"] {{
+    color: var(--sr-muted);
+}}
+[data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] {{
+    color: var(--sr-primary) !important;
+    border-bottom: 2px solid var(--sr-accent) !important;
+}}
+[data-testid="stTabs"] [data-testid="stTab"] p {{
+    color: inherit;
+}}
+
+[data-testid="stDataFrame"] {{
+    border: 1px solid var(--sr-border);
+    border-radius: var(--sr-radius);
+    overflow: hidden;
+}}
+[data-testid="stDataFrame"] [data-testid="stElementToolbar"] {{
+    background-color: var(--sr-canvas);
+}}
+
+[data-testid="stExpander"] {{
+    border: 1px solid var(--sr-border);
+    border-radius: var(--sr-radius);
+}}
+</style>
+"""
+
+
+def inject_theme_css(theme_setting: str) -> None:
+    """Inject the design-token CSS for the current theme setting.
+
+    'light' / 'dark' inject a fixed token set on :root. 'system' injects the
+    light tokens as the default plus an ``@media (prefers-color-scheme:
+    dark)`` override, so on-screen chrome follows the OS setting live.
+    """
+    light_tokens = theme.get_tokens("light")
+    if theme_setting == "dark":
+        css = _theme_css_body(theme.get_tokens("dark"))
+    elif theme_setting == "light":
+        css = _theme_css_body(light_tokens)
+    else:  # "system"
+        dark_block = f"""
+@media (prefers-color-scheme: dark) {{
+  :root {{
+{_css_vars_block(theme.get_tokens("dark"))}
+  }}
+}}
+"""
+        css = _theme_css_body(light_tokens, dark_block)
+    st.markdown(css, unsafe_allow_html=True)
 
 
 # ── Name normalization ───────────────────────────────────────────

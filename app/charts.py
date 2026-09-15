@@ -1,12 +1,74 @@
-"""charts.py — Altair chart builders for Shipping Record Search tab."""
+"""charts.py — Altair chart builders for Shipping Record Search & Dashboard tabs.
+
+All colors come from theme.py (CATEGORY_COLORS / SOURCE_COLORS / get_tokens) —
+no hex literals here. Call ``apply_altair_theme(mode)`` once per script run
+(after resolving the theme setting) before rendering any chart.
+"""
 
 import altair as alt
 import pandas as pd
+
+from theme import CATEGORY_COLORS, SOURCE_COLORS, get_tokens
 
 _MONTHS_ORDER = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
+
+_ALTAIR_THEME_NAME = "sales_report_tool"
+
+# Vega expression: abbreviate numeric axis labels (1.2M / 340K); pass
+# through non-numeric (nominal/ordinal) labels unchanged.
+_NUM_LABEL_EXPR = (
+    "isNumber(datum.value) ? "
+    "(abs(datum.value) >= 1e9 ? format(datum.value / 1e9, '.2f') + 'B' : "
+    "abs(datum.value) >= 1e6 ? format(datum.value / 1e6, '.1f') + 'M' : "
+    "abs(datum.value) >= 1e3 ? format(datum.value / 1e3, '.0f') + 'K' : "
+    "format(datum.value, ',')) : datum.value"
+)
+
+
+def apply_altair_theme(mode: str) -> None:
+    """Register + enable the shared Altair theme for *mode* ('light'/'dark').
+
+    Re-registering under the same theme name is idempotent, so calling this
+    once near the top of every Streamlit script run (with the currently
+    resolved mode) keeps every chart in sync with the Settings theme.
+    """
+    t = get_tokens(mode)
+
+    def _theme_config():
+        return alt.theme.ThemeConfig({
+            "config": {
+                "background": "transparent",
+                "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                "title": {"color": t["text"], "fontSize": 14, "fontWeight": 600},
+                "text": {"color": t["text"]},
+                "view": {"stroke": None},
+                "point": {"size": 30},
+                "axis": {
+                    "domain": False,
+                    "tickColor": t["border"],
+                    "labelColor": t["text"],
+                    "labelFontSize": 11,
+                    "titleColor": t["muted"],
+                    "titleFontSize": 11,
+                    "titleFontWeight": 600,
+                    "labelExpr": _NUM_LABEL_EXPR,
+                    "gridColor": t["border"],
+                },
+                "axisX": {"grid": False},
+                "axisY": {"grid": True},
+                "legend": {
+                    "orient": "top",
+                    "title": None,
+                    "labelColor": t["text"],
+                    "labelFontSize": 11,
+                },
+            }
+        })
+
+    alt.theme.register(_ALTAIR_THEME_NAME, enable=True)(_theme_config)
 
 
 def chart_up_tp_trend(results: pd.DataFrame) -> alt.LayerChart:
@@ -18,7 +80,7 @@ def chart_up_tp_trend(results: pd.DataFrame) -> alt.LayerChart:
 
     return (
         alt.Chart(long)
-        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .mark_line(point=alt.OverlayMarkDef(size=30))
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
             y=alt.Y("Price:Q", title="Price"),
@@ -62,8 +124,9 @@ def chart_qty_by_month(results: pd.DataFrame) -> alt.LayerChart:
     return bars + text
 
 
-def chart_gp_pct_trend(results: pd.DataFrame) -> alt.Chart:
+def chart_gp_pct_trend(results: pd.DataFrame, mode: str = "light") -> alt.Chart:
     """GP% monthly weighted-average trend — line chart."""
+    t = get_tokens(mode)
     m = results.copy()
     m["Month"] = m["Ship Date"].dt.to_period("M").astype(str)
     m["_gp_val"] = (m["UP"] - m["TP(USD)"]) * m["QTY"]
@@ -77,33 +140,20 @@ def chart_gp_pct_trend(results: pd.DataFrame) -> alt.Chart:
 
     return (
         alt.Chart(agg)
-        .mark_line(point=alt.OverlayMarkDef(size=40), color="#ff7f0e")
+        .mark_line(point=alt.OverlayMarkDef(size=30), color=t["negative"])
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("GP%:Q", title="GP%"),
+            y=alt.Y("GP%:Q", title="GP%",
+                     axis=alt.Axis(format=".1f", labelExpr="format(datum.value, '.1f')")),
             tooltip=["Month:N", alt.Tooltip("GP%:Q", format=".1f")],
         )
     )
 
 
-# ── Dashboard color scheme ────────────────────────────────────────
-CAT_COLORS = {
-    "CDR":        "#1f77b4",
-    "CDR ACC":    "#aec7e8",
-    "Tablet":     "#ff7f0e",
-    "Tablet ACC": "#ffbb78",
-    "AI_SW":      "#2ca02c",
-    "Signify":    "#9467bd",
-    "Others":     "#d62728",
-}
-
-
-def _cat_color_scale():
+def _cat_color_scale(mode: str) -> alt.Scale:
     """Altair color scale for consistent category colors."""
-    return alt.Scale(
-        domain=list(CAT_COLORS.keys()),
-        range=list(CAT_COLORS.values()),
-    )
+    cats = CATEGORY_COLORS(mode)
+    return alt.Scale(domain=list(cats.keys()), range=list(cats.values()))
 
 
 # ── Dashboard charts ──────────────────────────────────────────────
@@ -112,12 +162,11 @@ def chart_revenue_trend(monthly_df, multi_year=False):
     if multi_year:
         return (
             alt.Chart(monthly_df)
-            .mark_line(point=alt.OverlayMarkDef(size=40))
+            .mark_line(point=alt.OverlayMarkDef(size=30))
             .encode(
                 x=alt.X("MonthNum:O", title="Month",
                          axis=alt.Axis(labelExpr="datum.value")),
-                y=alt.Y("Revenue:Q", title="Revenue",
-                         axis=alt.Axis(format=",.0f")),
+                y=alt.Y("Revenue:Q", title="Revenue"),
                 color=alt.Color("Year:N"),
                 tooltip=[
                     "Year:N", "MonthNum:O",
@@ -127,43 +176,44 @@ def chart_revenue_trend(monthly_df, multi_year=False):
         )
     return (
         alt.Chart(monthly_df)
-        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .mark_line(point=alt.OverlayMarkDef(size=30))
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("Revenue:Q", title="Revenue",
-                     axis=alt.Axis(format=",.0f")),
+            y=alt.Y("Revenue:Q", title="Revenue"),
             tooltip=["Month:N", alt.Tooltip("Revenue:Q", format=",.0f")],
         )
     )
 
 
-def chart_gp_dual_axis(monthly_df):
+def chart_gp_dual_axis(monthly_df, mode: str = "light"):
     """GP bar + GP% line dual-axis chart."""
+    t = get_tokens(mode)
     base = alt.Chart(monthly_df).encode(
         x=alt.X("Month:N", title="Month", sort=None),
     )
-    bars = base.mark_bar(opacity=0.6, color="#5470c6").encode(
-        y=alt.Y("GP:Q", title="GP", axis=alt.Axis(format=",.0f")),
+    bars = base.mark_bar(opacity=0.75, color=t["primary"]).encode(
+        y=alt.Y("GP:Q", title="GP"),
         tooltip=["Month:N", alt.Tooltip("GP:Q", format=",.0f")],
     )
     line = base.mark_line(
-        color="#ee6666",
-        point=alt.OverlayMarkDef(size=40, color="#ee6666"),
+        color=t["negative"],
+        point=alt.OverlayMarkDef(size=30, color=t["negative"]),
     ).encode(
-        y=alt.Y("GP%:Q", title="GP%", axis=alt.Axis(format=".1f")),
+        y=alt.Y("GP%:Q", title="GP%",
+                 axis=alt.Axis(format=".1f", labelExpr="format(datum.value, '.1f')")),
         tooltip=["Month:N", alt.Tooltip("GP%:Q", format=".1f")],
     )
     return alt.layer(bars, line).resolve_scale(y="independent")
 
 
-def chart_category_donut(cat_df):
+def chart_category_donut(cat_df, mode: str = "light"):
     """Category revenue share donut chart."""
     return (
         alt.Chart(cat_df)
         .mark_arc(innerRadius=60)
         .encode(
             theta=alt.Theta("Revenue:Q"),
-            color=alt.Color("Category:N", scale=_cat_color_scale(),
+            color=alt.Color("Category:N", scale=_cat_color_scale(mode),
                            legend=alt.Legend(title="Category")),
             tooltip=[
                 "Category:N",
@@ -174,16 +224,15 @@ def chart_category_donut(cat_df):
     )
 
 
-def chart_category_stacked(monthly_cat_df):
+def chart_category_stacked(monthly_cat_df, mode: str = "light"):
     """Stacked bar: monthly revenue by category."""
     return (
         alt.Chart(monthly_cat_df)
         .mark_bar()
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("Revenue:Q", title="Revenue", stack="zero",
-                     axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Category:N", scale=_cat_color_scale()),
+            y=alt.Y("Revenue:Q", title="Revenue", stack="zero"),
+            color=alt.Color("Category:N", scale=_cat_color_scale(mode)),
             tooltip=[
                 "Month:N", "Category:N",
                 alt.Tooltip("Revenue:Q", format=",.0f"),
@@ -192,16 +241,15 @@ def chart_category_stacked(monthly_cat_df):
     )
 
 
-def chart_customer_qty_by_cat(monthly_qty_cat_df: pd.DataFrame) -> alt.Chart:
+def chart_customer_qty_by_cat(monthly_qty_cat_df: pd.DataFrame, mode: str = "light") -> alt.Chart:
     """Grouped bar chart: monthly QTY by Category for drill-down."""
     return (
         alt.Chart(monthly_qty_cat_df)
         .mark_bar()
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("QTY:Q", title="QTY",
-                     axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Category:N", scale=_cat_color_scale(),
+            y=alt.Y("QTY:Q", title="QTY"),
+            color=alt.Color("Category:N", scale=_cat_color_scale(mode),
                            legend=alt.Legend(title="Category")),
             xOffset=alt.XOffset("Category:N"),
             tooltip=[
@@ -212,7 +260,7 @@ def chart_customer_qty_by_cat(monthly_qty_cat_df: pd.DataFrame) -> alt.Chart:
     )
 
 
-def chart_ai_sw_revenue_trend(monthly_cat_df: pd.DataFrame) -> alt.Chart:
+def chart_ai_sw_revenue_trend(monthly_cat_df: pd.DataFrame, mode: str = "light") -> alt.Chart:
     """AI_SW monthly revenue line chart."""
     ai_sw = monthly_cat_df[monthly_cat_df["Category"] == "AI_SW"].copy()
     if ai_sw.empty:
@@ -223,12 +271,12 @@ def chart_ai_sw_revenue_trend(monthly_cat_df: pd.DataFrame) -> alt.Chart:
     return (
         alt.Chart(ai_sw)
         .mark_line(
-            point=alt.OverlayMarkDef(size=50),
-            color=CAT_COLORS.get("AI_SW", "#2ca02c"),
+            point=alt.OverlayMarkDef(size=30),
+            color=CATEGORY_COLORS(mode).get("AI_SW"),
         )
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("Revenue:Q", title="Revenue", axis=alt.Axis(format=",.0f")),
+            y=alt.Y("Revenue:Q", title="Revenue"),
             tooltip=[
                 "Month:N",
                 alt.Tooltip("Revenue:Q", format=",.0f"),
@@ -237,13 +285,13 @@ def chart_ai_sw_revenue_trend(monthly_cat_df: pd.DataFrame) -> alt.Chart:
     )
 
 
-def chart_top_customers_bar(top_df):
+def chart_top_customers_bar(top_df, mode: str = "light"):
     """Horizontal bar chart for top N customers."""
+    t = get_tokens(mode)
     data = top_df.reset_index().copy()
-    bars = alt.Chart(data).mark_bar().encode(
+    bars = alt.Chart(data).mark_bar(color=t["primary"]).encode(
         y=alt.Y("Customer Name:N", sort="-x", title=None),
-        x=alt.X("Revenue:Q", title="Revenue",
-                 axis=alt.Axis(format=",.0f")),
+        x=alt.X("Revenue:Q", title="Revenue"),
         tooltip=[
             "Customer Name:N",
             alt.Tooltip("Revenue:Q", format=",.0f"),
@@ -256,15 +304,15 @@ def chart_top_customers_bar(top_df):
     return bars + text
 
 
-def chart_customer_monthly(detail_monthly_df):
+def chart_customer_monthly(detail_monthly_df, mode: str = "light"):
     """Single customer monthly revenue trend."""
+    t = get_tokens(mode)
     return (
         alt.Chart(detail_monthly_df)
-        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .mark_line(point=alt.OverlayMarkDef(size=30), color=t["primary"])
         .encode(
             x=alt.X("Month:N", title="Month", sort=None),
-            y=alt.Y("Revenue:Q", title="Revenue",
-                     axis=alt.Axis(format=",.0f")),
+            y=alt.Y("Revenue:Q", title="Revenue"),
             tooltip=[
                 "Month:N",
                 alt.Tooltip("Revenue:Q", format=",.0f"),
@@ -274,14 +322,14 @@ def chart_customer_monthly(detail_monthly_df):
     )
 
 
-def chart_customer_cat_donut(cat_df):
+def chart_customer_cat_donut(cat_df, mode: str = "light"):
     """Single customer category breakdown donut."""
     return (
         alt.Chart(cat_df)
         .mark_arc(innerRadius=50)
         .encode(
             theta=alt.Theta("Revenue:Q"),
-            color=alt.Color("Category:N", scale=_cat_color_scale()),
+            color=alt.Color("Category:N", scale=_cat_color_scale(mode)),
             tooltip=[
                 "Category:N",
                 alt.Tooltip("Revenue:Q", format=",.0f"),
@@ -292,95 +340,86 @@ def chart_customer_cat_donut(cat_df):
 
 
 # ── Blended Actual + Forecast + Budget charts ────────────────
+def _source_scales(mode: str):
+    """(color scale, dash scale) for the Actual/Forecast/Budget Source field."""
+    sc = SOURCE_COLORS(mode)
+    domain = list(sc.keys())
+    return (
+        alt.Scale(domain=domain, range=[sc[k]["color"] for k in domain]),
+        alt.Scale(domain=domain, range=[sc[k]["dash"] for k in domain]),
+    )
 
-_SOURCE_COLOR = alt.Scale(
-    domain=["Actual", "Forecast", "Budget"],
-    range=["#5470c6", "#91cc75", "#999999"],
-)
-_SOURCE_DASH = alt.Scale(
-    domain=["Actual", "Forecast", "Budget"],
-    range=[[1, 0], [6, 3], [4, 4]],
-)
+
+def _actual_forecast_boundary_rule(df: pd.DataFrame, mode: str):
+    """Vertical rule at the start of the first Forecast month, or None."""
+    t = get_tokens(mode)
+    actual_max = (
+        df[df["Source"] == "Actual"]["MonthIndex"].max()
+        if "Actual" in df["Source"].values else None
+    )
+    if actual_max is None or int(actual_max) >= 12:
+        return None
+    boundary_period = _MONTHS_ORDER[int(actual_max)]
+    return (
+        alt.Chart({"values": [{"Period": boundary_period}]})
+        .mark_rule(color=t["muted"], strokeDash=[4, 2], opacity=0.6, size=1)
+        .encode(x=alt.X("Period:N", sort=_MONTHS_ORDER))
+    )
 
 
-def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
-    """Monthly revenue line: Actual = solid blue, Forecast = dashed green, Budget = dashed gray.
+def chart_revenue_trend_blended(blended_monthly_df: pd.DataFrame, mode: str = "light") -> alt.LayerChart:
+    """Monthly revenue line: Actual = solid primary, Forecast = dashed accent, Budget = dashed muted.
 
     Input: output of fcst_loader.agg_blended_monthly() or concat with agg_budget_monthly().
     Columns required: Period, MonthIndex, Source, Revenue.
     """
     df = blended_monthly_df.copy()
+    color_scale, dash_scale = _source_scales(mode)
     line = (
         alt.Chart(df)
-        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .mark_line(point=alt.OverlayMarkDef(size=30))
         .encode(
             x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
-            y=alt.Y("Revenue:Q", title="Revenue", axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
-                            legend=alt.Legend(title="")),
-            strokeDash=alt.StrokeDash("Source:N", scale=_SOURCE_DASH,
-                                      legend=None),
+            y=alt.Y("Revenue:Q", title="Revenue"),
+            color=alt.Color("Source:N", scale=color_scale, legend=alt.Legend(title="")),
+            strokeDash=alt.StrokeDash("Source:N", scale=dash_scale, legend=None),
             tooltip=[
                 "Period:N", "Source:N",
                 alt.Tooltip("Revenue:Q", format=",.0f"),
             ],
         )
     )
-    # Vertical rule at the start of the first Forecast month
-    actual_max = (
-        df[df["Source"] == "Actual"]["MonthIndex"].max()
-        if "Actual" in df["Source"].values else None
-    )
-    if actual_max is not None and int(actual_max) < 12:
-        boundary_period = _MONTHS_ORDER[int(actual_max)]  # first Forecast month
-        rule = (
-            alt.Chart({"values": [{"Period": boundary_period}]})
-            .mark_rule(color="#aaaaaa", strokeDash=[4, 2], opacity=0.6, size=1)
-            .encode(x=alt.X("Period:N", sort=_MONTHS_ORDER))
-        )
-        return alt.layer(line, rule)
-    return alt.layer(line)
+    rule = _actual_forecast_boundary_rule(df, mode)
+    return alt.layer(line, rule) if rule is not None else alt.layer(line)
 
 
-def chart_qty_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
-    """Monthly QTY line chart: Actual = solid blue, Forecast = dashed green. Budget excluded.
+def chart_qty_trend_blended(blended_monthly_df: pd.DataFrame, mode: str = "light") -> alt.LayerChart:
+    """Monthly QTY line chart: Actual = solid primary, Forecast = dashed accent. Budget excluded.
 
     Input: output of fcst_loader.agg_blended_monthly().
     Columns required: Period, MonthIndex, Source, QTY.
     """
     df = blended_monthly_df[blended_monthly_df["Source"] != "Budget"].copy()
+    color_scale, dash_scale = _source_scales(mode)
     line = (
         alt.Chart(df)
-        .mark_line(point=alt.OverlayMarkDef(size=40))
+        .mark_line(point=alt.OverlayMarkDef(size=30))
         .encode(
             x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
-            y=alt.Y("QTY:Q", title="QTY", axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
-                            legend=alt.Legend(title="")),
-            strokeDash=alt.StrokeDash("Source:N", scale=_SOURCE_DASH,
-                                      legend=None),
+            y=alt.Y("QTY:Q", title="QTY"),
+            color=alt.Color("Source:N", scale=color_scale, legend=alt.Legend(title="")),
+            strokeDash=alt.StrokeDash("Source:N", scale=dash_scale, legend=None),
             tooltip=[
                 "Period:N", "Source:N",
                 alt.Tooltip("QTY:Q", format=","),
             ],
         )
     )
-    actual_max = (
-        df[df["Source"] == "Actual"]["MonthIndex"].max()
-        if "Actual" in df["Source"].values else None
-    )
-    if actual_max is not None and int(actual_max) < 12:
-        boundary_period = _MONTHS_ORDER[int(actual_max)]
-        rule = (
-            alt.Chart({"values": [{"Period": boundary_period}]})
-            .mark_rule(color="#aaaaaa", strokeDash=[4, 2], opacity=0.6, size=1)
-            .encode(x=alt.X("Period:N", sort=_MONTHS_ORDER))
-        )
-        return alt.layer(line, rule)
-    return alt.layer(line)
+    rule = _actual_forecast_boundary_rule(df, mode)
+    return alt.layer(line, rule) if rule is not None else alt.layer(line)
 
 
-def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
+def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame, mode: str = "light") -> alt.LayerChart:
     """GP bar + GP% line dual-axis chart with Actual/Forecast/Budget color coding.
 
     Budget bars are rendered as a separate low-opacity layer (reference only) so
@@ -390,18 +429,19 @@ def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
     Input: output of fcst_loader.agg_blended_monthly() or concat with agg_budget_monthly().
     Columns required: Period, MonthIndex, Source, GP, GP%.
     """
+    t = get_tokens(mode)
+    color_scale, _ = _source_scales(mode)
     df = blended_monthly_df.copy()
     df_main = df[df["Source"] != "Budget"]
     df_budget = df[df["Source"] == "Budget"]
 
     bars_main = (
         alt.Chart(df_main)
-        .mark_bar(opacity=0.65)
+        .mark_bar(opacity=0.75)
         .encode(
             x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
-            y=alt.Y("GP:Q", title="GP", axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
-                            legend=alt.Legend(title="")),
+            y=alt.Y("GP:Q", title="GP"),
+            color=alt.Color("Source:N", scale=color_scale, legend=alt.Legend(title="")),
             tooltip=[
                 "Period:N", "Source:N",
                 alt.Tooltip("GP:Q", format=",.0f"),
@@ -413,9 +453,8 @@ def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
         .mark_bar(opacity=0.3)
         .encode(
             x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
-            y=alt.Y("GP:Q", title="GP", axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Source:N", scale=_SOURCE_COLOR,
-                            legend=alt.Legend(title="")),
+            y=alt.Y("GP:Q", title="GP"),
+            color=alt.Color("Source:N", scale=color_scale, legend=alt.Legend(title="")),
             tooltip=[
                 "Period:N", "Source:N",
                 alt.Tooltip("GP:Q", format=",.0f"),
@@ -425,12 +464,13 @@ def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
     line = (
         alt.Chart(df_main)
         .mark_line(
-            color="#ee6666",
-            point=alt.OverlayMarkDef(size=40, color="#ee6666"),
+            color=t["negative"],
+            point=alt.OverlayMarkDef(size=30, color=t["negative"]),
         )
         .encode(
             x=alt.X("Period:N", title="Month", sort=_MONTHS_ORDER),
-            y=alt.Y("GP%:Q", title="GP%", axis=alt.Axis(format=".1f")),
+            y=alt.Y("GP%:Q", title="GP%",
+                     axis=alt.Axis(format=".1f", labelExpr="format(datum.value, '.1f')")),
             tooltip=["Period:N", alt.Tooltip("GP%:Q", format=".1f")],
         )
     )
