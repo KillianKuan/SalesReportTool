@@ -71,6 +71,9 @@ platform is packaged on its own runner:
 3. **Both** workflows run and attach their zip to the **same** GitHub Release for that tag.
 4. End users download the zip for their platform from the Release.
 
+> Before tagging, bump `FileVersion` / `ProductVersion` in `version_info.txt` (Windows exe version
+> resource) to match the new tag — it is not derived from the tag automatically.
+
 You can also run either workflow manually from the **Actions** tab (`workflow_dispatch`); the
 `.zip` is then available as a downloadable workflow artifact.
 
@@ -238,6 +241,7 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 | Name not normalizing | Check alias key is in normalized form; restart app after editing |
 | Build fails | Run `pip install -r requirements.txt` first |
 | CI build fails on tag push | Open the **Actions** tab → the failed **Build Windows EXE** / **Build macOS App** run and check the failed step's log |
+| Antivirus (e.g. Trend Micro) quarantines `SalesReportTool.exe` as a Trojan/ML heuristic hit | Unzip to a fixed folder such as `C:\Tools\SalesReportTool\` and run it from there rather than directly from the zip or a temp/Downloads folder; submit the exe's SHA256 (printed at the end of the build) to Trend Micro / IT for allowlisting or a false-positive report |
 
 ### macOS specific
 
@@ -261,6 +265,16 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
   to the same Release as the Windows zip on `vX.Y.Z` tags
 - `launcher.py` now resolves macOS-specific log, app and data locations under `~/Library`;
   `app/` code remains platform-agnostic
+
+### v3.9 (September 2026)
+- Hardened Windows build to reduce antivirus false positives (Trend Micro ML engine flagged the
+  packaged exe as `Troj.Win32.TRX.XXPE50FFF109`): disabled UPX compression (`--noupx`) and added a
+  Windows version resource (`version_info.txt` via `--version-file`) so the exe carries proper
+  CompanyName/ProductName/FileVersion metadata
+- Build scripts (`build.bat`, `build-windows.yml`) now print the SHA256 of the built exe, for
+  submitting to Trend Micro / IT allowlisting
+- Troubleshooting: added guidance to unzip to a fixed folder (e.g. `C:\Tools\SalesReportTool\`)
+  rather than running from the zip or a temp folder
 
 ### v3.6 (May 2026)
 - Data folder restructure: year-based `data/{year}/` replaced with `data/Over the Years/historical.csv` (all past years) + `data/Current Year/*.xlsx` (current year)
