@@ -421,7 +421,7 @@ with main_tab1:
                                 "Reassign",
                                 _override_opts,
                                 index=_override_opts.index(_cur),
-                                key=f"override_{'__'.join(_ok)}",
+                                key=f"override_{_i}_{'__'.join(_ok)}",
                                 label_visibility="collapsed",
                             )
                             if _choice != "Others (keep)":
