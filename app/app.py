@@ -282,12 +282,11 @@ if st.sidebar.button(
 if _nav_page == "Performance Report":
     with st.container(border=True):
         card_title("Filters", icon="filter_alt")
-        _perf_year = st.pills(
+        _perf_year = st.radio(
             "Select year",
             options=available_years,
-            default=default_year,
-            selection_mode="single",
-            required=True,
+            index=available_years.index(default_year),
+            horizontal=True,
             key="year_perf",
         )
         df = all_df[all_df["Ship Date"].dt.year == _perf_year].copy()
