@@ -264,6 +264,41 @@ def inject_layout_css() -> None:
 [data-testid="stSidebar"] .stButton button[kind="secondary"] div {{
     color: var(--text-color) !important;
 }}
+/* FCST / System Info expander headers (sidebar only — main-content
+   expanders are untouched). The header's own background is transparent,
+   so it always shows the sidebar's dark green through it; the broad "p,
+   label, ..." rule above already whitens the label text, but the toggle
+   chevron and any other icon glyph under the header are plain <span>s
+   that rule doesn't reach, so they're left at Streamlit's default dark
+   text color — nearly invisible on dark green. Whiten every element in
+   the header instead of guessing at each icon's selector, and keep the
+   header surface itself transparent/white-tinted (not Streamlit's native
+   light hover surface) so label, icon and chevron read as one coherent,
+   sidebar-colored control in every state. */
+[data-testid="stSidebar"] [data-testid="stExpander"] summary,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary * {{
+    color: #FFFFFF !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] details {{
+    background-color: transparent;
+    border-color: rgba(255, 255, 255, 0.35);
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+    background-color: transparent;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover * {{
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.85) !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:focus-visible {{
+    outline: 2px solid #FFFFFF;
+    outline-offset: -2px;
+    background-color: rgba(255, 255, 255, 0.12);
+    /* Suppress Streamlit's default reddish primary-color focus ring so the
+       header shows a single coherent white outline instead of two rings. */
+    box-shadow: none !important;
+}}
 
 div[data-testid="stVerticalBlockBorderWrapper"] {{
     border-radius: 12px;
