@@ -279,90 +279,210 @@ if st.sidebar.button(
 # ------------------------------------------------------------------
 
 # -- PAGE: Performance Report -------------------------------------
+
+def _pr_cust_key(year, customer: str) -> str:
+    """Session-state key for one customer's *checkbox widget* on the
+    Performance Report config page. This is display-only state \u2014 see
+    ``_pr_selected_set()`` for why the actual selection isn't stored here."""
+    return f"pr_cfg_sel__{year}__{customer}"
+
+
+def _pr_selected_set(year) -> set:
+    """The canonical, persistent set of selected customers for ``year``.
+
+    Deliberately NOT a widget ``key=`` value: Streamlit prunes a widget's
+    session_state entry once it goes a run or two without being
+    instantiated, which happens the moment a search query hides a checked
+    customer from the grid \u2014 a plain checkbox-keyed truth would silently
+    lose that selection. Keeping the real truth in an ordinary set here
+    means it survives regardless of what the search box currently shows;
+    the checkboxes are re-synced from it (and back into it) each run.
+    """
+    return st.session_state.setdefault(f"pr_cfg_selected_set__{year}", set())
+
+
+def _pr_selected_customers(year, customers) -> list[str]:
+    """Customers (from ``customers``) currently selected for ``year``."""
+    _sel = _pr_selected_set(year)
+    return [c for c in customers if c in _sel]
+
+
+def _pr_set_selection(year, customers, value: bool) -> None:
+    _sel = _pr_selected_set(year)
+    if value:
+        _sel.update(customers)
+    else:
+        _sel.difference_update(customers)
+
+
+def _pr_remove_customer(year, customer: str) -> None:
+    """Drop a customer everywhere it could have been selected from \u2014 the
+    config page's own selection set and the sidebar Sales Person filter \u2014
+    so a chip's \u2715 reliably removes it."""
+    _pr_selected_set(year).discard(customer)
+    st.session_state[f"sp_cust__{customer}"] = False
+
+
+def _pr_sync_checkbox_to_selection(year, customer: str, key: str) -> None:
+    """``on_change`` callback: propagate one checkbox's own new value into
+    the canonical selection set (see ``_pr_selected_set()``)."""
+    _pr_set_selection(year, [customer], st.session_state[key])
+
+
 if _nav_page == "Performance Report":
-    with st.container(border=True):
-        pr_section_heading("Filters", icon="filter_alt")
-        _perf_year = st.radio(
-            "Select year",
-            options=available_years,
-            index=available_years.index(default_year),
-            horizontal=True,
-            key="year_perf",
-        )
-        df = all_df[all_df["Ship Date"].dt.year == _perf_year].copy()
+    # -- Config state: init + reconcile against currently available years --
+    st.session_state.setdefault("pr_cfg_year", default_year)
+    if st.session_state["pr_cfg_year"] not in available_years:
+        st.session_state["pr_cfg_year"] = default_year
+    _perf_year = st.session_state["pr_cfg_year"]
 
-        st.markdown("**:material/search: Customer Name**")
-        cust_query = st.text_input("Enter keyword (substring, case-insensitive)")
-        all_customers = sorted(df["Customer Name"].dropna().unique())
-        if cust_query.strip():
-            matched = [c for c in all_customers if cust_query.strip().lower() in c.lower()]
-            if not matched:
-                st.warning("No matching customers found.")
-            else:
-                st.markdown(f"**Found {len(matched)} customer(s):**")
-                for c in matched:
-                    st.session_state.setdefault(f"cust__{c}", False)
-                    st.checkbox(c, key=f"cust__{c}")
+    df = all_df[all_df["Ship Date"].dt.year == _perf_year].copy()
+    all_customers = sorted(df["Customer Name"].dropna().unique())
 
-        selected_keyword = [
-            c for c in all_customers if st.session_state.get(f"cust__{c}", False)
-        ]
-        selected_sp = [
-            c for c in all_customers
-            if c in _sp_visible_custs and st.session_state.get(f"sp_cust__{c}", False)
-        ]
-        selected = sorted(set(selected_keyword + selected_sp))
-        if selected:
-            st.markdown(
-                "**Selected ({}):** {}".format(
-                    len(selected), "\u3000".join(f"`{c}`" for c in selected)
-                )
+    _year_col, _cust_col = st.columns([1, 2])
+
+    with _year_col:
+        with st.container(border=True):
+            pr_section_heading("Select Year", icon="calendar_month")
+            for _y in available_years:
+                if st.button(
+                    str(_y),
+                    key=f"pr_cfg_year_btn_{_y}",
+                    type="primary" if _y == _perf_year else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state["pr_cfg_year"] = _y
+                    st.rerun()
+            st.caption("Reporting year for the analysis.")
+
+    with _cust_col:
+        with st.container(border=True):
+            pr_section_heading("Customer Selection", icon="group")
+            cust_query = st.text_input(
+                "Search customer by name",
+                key="pr_cfg_search",
+                placeholder="Search customer by name...",
+                label_visibility="collapsed",
             )
-            if st.button("Clear all selections", icon=":material/backspace:"):
-                for c in all_customers:
-                    st.session_state.pop(f"cust__{c}", None)
-                    st.session_state.pop(f"sp_cust__{c}", None)
+            matched = (
+                [c for c in all_customers if cust_query.strip().lower() in c.lower()]
+                if cust_query.strip() else all_customers
+            )
+
+            st.markdown(f"**{len(matched)} customer(s) found**")
+            _sa_col, _cl_col = st.columns(2)
+            with _sa_col:
+                if st.button(
+                    "Select All", icon=":material/done_all:",
+                    key="pr_cfg_select_all", use_container_width=True,
+                    disabled=not matched,
+                ):
+                    _pr_set_selection(_perf_year, matched, True)
+            with _cl_col:
+                if st.button(
+                    "Clear", icon=":material/backspace:",
+                    key="pr_cfg_clear_matched", use_container_width=True,
+                    disabled=not matched,
+                ):
+                    _pr_set_selection(_perf_year, matched, False)
+
+            if not matched:
+                st.info("No matching customers found.")
+            else:
+                _list_box = st.container(height=280) if len(matched) > 8 else st.container()
+                with _list_box:
+                    _cust_cols = st.columns(2)
+                    for _i, _c in enumerate(matched):
+                        _key = _pr_cust_key(_perf_year, _c)
+                        # Force-sync the checkbox's display value from the
+                        # canonical selection set before it is instantiated —
+                        # safe because this key hasn't been created yet this
+                        # run (see _pr_selected_set()'s docstring).
+                        st.session_state[_key] = _c in _pr_selected_set(_perf_year)
+                        with _cust_cols[_i % 2]:
+                            st.checkbox(
+                                _c, key=_key,
+                                on_change=_pr_sync_checkbox_to_selection,
+                                args=(_perf_year, _c, _key),
+                            )
+
+    selected_keyword = _pr_selected_customers(_perf_year, all_customers)
+    selected_sp = [
+        c for c in all_customers
+        if c in _sp_visible_custs and st.session_state.get(f"sp_cust__{c}", False)
+    ]
+    selected = sorted(set(selected_keyword + selected_sp))
+
+    with st.container(border=True):
+        pr_section_heading(f"Selected Customers ({len(selected)})", icon="how_to_reg")
+        if not selected:
+            st.caption("No customers selected yet. Choose at least one above.")
+        else:
+            _chip_cols = st.columns(3)
+            for _i, _c in enumerate(selected):
+                with _chip_cols[_i % 3]:
+                    if st.button(
+                        _c, icon=":material/close:",
+                        key=f"pr_cfg_chip__{_perf_year}__{_c}",
+                        use_container_width=True,
+                    ):
+                        _pr_remove_customer(_perf_year, _c)
+                        st.rerun()
+            if st.button("Clear All", icon=":material/backspace:", key="pr_cfg_clear_all"):
+                _pr_set_selection(_perf_year, all_customers, False)
+                for _c in all_customers:
+                    st.session_state[f"sp_cust__{_c}"] = False
                 st.rerun()
 
-        st.divider()
-        qty_only = st.checkbox("QTY: Sum only Tablet & CDR (exclude ACC)", value=True)
-        merge_acc = st.checkbox("Merge ACC into Main Device Categories", value=True)
+    with st.container(border=True):
+        pr_section_heading("Report Options", icon="tune")
+        qty_only = st.checkbox(
+            "QTY: Sum only Tablet & CDR (exclude ACC)", value=True, key="pr_cfg_qty_only",
+        )
+        st.caption("Include only Tablet and CDR quantities in the calculation.")
+        merge_acc = st.checkbox(
+            "Merge ACC into Main Device Categories", value=True, key="pr_cfg_merge_acc",
+        )
+        st.caption("Combine ACC data into main device categories.")
 
-        _opts = (qty_only, merge_acc, _perf_year, tuple(sorted(selected)))
+    _opts = (qty_only, merge_acc, _perf_year, tuple(sorted(selected)))
 
-        if st.button("Run", icon=":material/play_arrow:", type="primary"):
-            if not selected:
-                st.warning("Please select at least one customer.")
-            else:
-                base = df[df["Customer Name"].isin(selected)].copy()
-                if base.empty:
-                    st.warning("No data for selected customer(s).")
-                else:
-                    with st.spinner("Generating report..."):
-                        wide_summary = to_wide_summary(build_summary(base, qty_only))
-                        long_bycat = build_bycat(base, qty_only, merge_acc)
-                        others_df = base[base["Category"] == "Others"].copy()
+    if not selected:
+        st.warning("Select at least one customer to generate the report.")
 
-                        buf = io.BytesIO()
-                        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                            wide_summary.to_excel(w, sheet_name="Summary", index=False)
-                            all_months = sorted(long_bycat["Month"].unique().tolist())
-                            frames = []
-                            for cat in sorted_cats(long_bycat):
-                                wc = to_wide_one_cat(long_bycat, cat, all_months)
-                                wc.insert(0, "Category", cat)
-                                frames.append(wc)
-                            pd.concat(frames, ignore_index=True).to_excel(
-                                w, sheet_name="ByCategory", index=False
-                            )
-                        buf.seek(0)
+    if st.button(
+        "Generate Report", icon=":material/description:", type="primary",
+        use_container_width=True, disabled=not selected,
+    ):
+        base = df[df["Customer Name"].isin(selected)].copy()
+        if base.empty:
+            st.warning("No data for selected customer(s).")
+        else:
+            with st.spinner("Generating report..."):
+                wide_summary = to_wide_summary(build_summary(base, qty_only))
+                long_bycat = build_bycat(base, qty_only, merge_acc)
+                others_df = base[base["Category"] == "Others"].copy()
 
-                    st.session_state["rpt_summary"] = wide_summary
-                    st.session_state["rpt_long_bycat"] = long_bycat
-                    st.session_state["rpt_others"] = others_df
-                    st.session_state["rpt_buf"] = buf.getvalue()
-                    st.session_state["rpt_has_des"] = has_des
-                    st.session_state["rpt_opts"] = _opts
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    wide_summary.to_excel(w, sheet_name="Summary", index=False)
+                    all_months = sorted(long_bycat["Month"].unique().tolist())
+                    frames = []
+                    for cat in sorted_cats(long_bycat):
+                        wc = to_wide_one_cat(long_bycat, cat, all_months)
+                        wc.insert(0, "Category", cat)
+                        frames.append(wc)
+                    pd.concat(frames, ignore_index=True).to_excel(
+                        w, sheet_name="ByCategory", index=False
+                    )
+                buf.seek(0)
+
+            st.session_state["rpt_summary"] = wide_summary
+            st.session_state["rpt_long_bycat"] = long_bycat
+            st.session_state["rpt_others"] = others_df
+            st.session_state["rpt_buf"] = buf.getvalue()
+            st.session_state["rpt_has_des"] = has_des
+            st.session_state["rpt_opts"] = _opts
 
     if "rpt_summary" in st.session_state:
         _summary = st.session_state["rpt_summary"]
@@ -415,7 +535,7 @@ if _nav_page == "Performance Report":
                                 save_overrides(st.session_state["others_overrides"])
                     if st.session_state["others_overrides"]:
                         st.info(
-                            "Overrides updated; press **Run** to apply them to the report."
+                            "Overrides updated; press **Generate Report** to apply them to the report."
                         )
                     if st.session_state.get("unmatched_overrides"):
                         _unmatched_str = "; ".join(
@@ -431,7 +551,7 @@ if _nav_page == "Performance Report":
         with st.container(border=True):
             pr_section_heading("Results", icon="insert_chart")
             if st.session_state.get("rpt_opts") != _opts:
-                st.info("Options have changed; press **Run** to refresh the report.")
+                st.info("Options have changed; press **Generate Report** to refresh the report.")
             _report_customers = list(st.session_state["rpt_opts"][3])
             st.markdown(
                 "**Customer(s):** "
