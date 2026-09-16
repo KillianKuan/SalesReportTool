@@ -717,13 +717,13 @@ def build_summary(base, qty_only):
     return agg.merge(qty, on="Month", how="left").fillna({"QTY (All)": 0})
 
 
-def build_bycat(base, qty_only, merge_cdr, merge_tab):
+def build_bycat(base, qty_only, merge_acc):
     cat_df = base.copy()
     orig = cat_df["Category"].copy()
-    if merge_cdr:
-        cat_df["Category"] = cat_df["Category"].replace("CDR ACC", "CDR")
-    if merge_tab:
-        cat_df["Category"] = cat_df["Category"].replace("Tablet ACC", "Tablet")
+    if merge_acc:
+        cat_df["Category"] = cat_df["Category"].replace(
+            {"CDR ACC": "CDR", "Tablet ACC": "Tablet"}
+        )
     agg = cat_df.groupby(["Month", "Category"], sort=True).agg(
         **{"SALES Total AMT": ("SALES Total AMT", "sum"),
            "final GP(NTD)": (GP_COL, "sum")}
@@ -912,14 +912,34 @@ def fmt_num(n) -> str:
     return f"{'-' if n < 0 else ''}{abs_n:,.0f}"
 
 
+def style_report_table(df_display):
+    """Shared Performance Report table styling: numeric/percentage cell
+    formatting (via ``fmt()``) plus left-aligned value columns and
+    theme-compatible header colors.
+
+    Meant to be rendered with ``st.table`` rather than ``st.dataframe`` —
+    unlike ``st.dataframe``, ``st.table`` applies the full range of Pandas
+    Styler CSS (text-align, header colors) used here. Used by both the
+    Summary panel and every By Category table so they present identically.
+    """
+    value_cols = [c for c in df_display.columns if c != df_display.columns[0]]
+    return (
+        fmt(df_display)
+        .set_properties(subset=pd.IndexSlice[:, value_cols], **{"text-align": "left"})
+        .set_table_styles([
+            {"selector": "th", "props": [
+                ("background-color", "var(--secondary-background-color)"),
+                ("color", "var(--text-color)"),
+            ]},
+        ])
+    )
+
+
 def show_bycat(long_bycat):
     all_months = sorted(long_bycat["Month"].unique().tolist())
     for cat in sorted_cats(long_bycat):
         st.markdown(f"**{cat}**")
-        st.dataframe(
-            fmt(to_wide_one_cat(long_bycat, cat, all_months)),
-            use_container_width=True,
-        )
+        st.table(style_report_table(to_wide_one_cat(long_bycat, cat, all_months)))
 
 
 # ── Cached shipping search ────────────────────────────────────────

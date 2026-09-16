@@ -21,7 +21,7 @@ from utils import (
     override_key, override_key_series,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
-    sorted_cats, fmt, show_bycat,
+    sorted_cats, show_bycat, style_report_table,
     cached_search_indices,
     calc_dashboard_kpis, build_monthly_trend,
     build_category_breakdown, build_monthly_category,
@@ -282,15 +282,15 @@ if st.sidebar.button(
 if _nav_page == "Performance Report":
     with st.container(border=True):
         card_title("Filters", icon="filter_alt")
-        _perf_col, _ = st.columns([2, 3])
-        with _perf_col:
-            _perf_years = st.multiselect(
-                "Select years",
-                options=available_years,
-                default=[default_year],
-                key="year_perf",
-            )
-        df = all_df[all_df["Ship Date"].dt.year.isin(_perf_years)].copy() if _perf_years else pd.DataFrame(columns=all_df.columns)
+        _perf_year = st.pills(
+            "Select year",
+            options=available_years,
+            default=default_year,
+            selection_mode="single",
+            required=True,
+            key="year_perf",
+        )
+        df = all_df[all_df["Ship Date"].dt.year == _perf_year].copy()
 
         st.markdown("**:material/search: Customer Name**")
         cust_query = st.text_input("Enter keyword (substring, case-insensitive)")
@@ -325,14 +325,11 @@ if _nav_page == "Performance Report":
                     st.session_state.pop(f"sp_cust__{c}", None)
                 st.rerun()
 
-        qty_only = st.checkbox("QTY: sum only Tablet & CDR (exclude ACC)", value=True)
-        by_cat = st.checkbox("Split report by Category", value=True)
-        merge_cdr = merge_tab = False
-        if by_cat:
-            merge_cdr = st.checkbox("  ↪ Merge CDR ACC into CDR", value=True)
-            merge_tab = st.checkbox("  ↪ Merge Tablet ACC into Tablet", value=True)
+        st.divider()
+        qty_only = st.checkbox("QTY: Sum only Tablet & CDR (exclude ACC)", value=True)
+        merge_acc = st.checkbox("Merge ACC into Main Device Categories", value=True)
 
-        _opts = (qty_only, by_cat, merge_cdr, merge_tab, tuple(sorted(selected)))
+        _opts = (qty_only, merge_acc, _perf_year, tuple(sorted(selected)))
 
         if st.button("Run", icon=":material/play_arrow:", type="primary"):
             if not selected:
@@ -344,25 +341,21 @@ if _nav_page == "Performance Report":
                 else:
                     with st.spinner("Generating report..."):
                         wide_summary = to_wide_summary(build_summary(base, qty_only))
-                        long_bycat = (
-                            build_bycat(base, qty_only, merge_cdr, merge_tab)
-                            if by_cat else pd.DataFrame()
-                        )
+                        long_bycat = build_bycat(base, qty_only, merge_acc)
                         others_df = base[base["Category"] == "Others"].copy()
 
                         buf = io.BytesIO()
                         with pd.ExcelWriter(buf, engine="openpyxl") as w:
                             wide_summary.to_excel(w, sheet_name="Summary", index=False)
-                            if not long_bycat.empty:
-                                all_months = sorted(long_bycat["Month"].unique().tolist())
-                                frames = []
-                                for cat in sorted_cats(long_bycat):
-                                    wc = to_wide_one_cat(long_bycat, cat, all_months)
-                                    wc.insert(0, "Category", cat)
-                                    frames.append(wc)
-                                pd.concat(frames, ignore_index=True).to_excel(
-                                    w, sheet_name="ByCategory", index=False
-                                )
+                            all_months = sorted(long_bycat["Month"].unique().tolist())
+                            frames = []
+                            for cat in sorted_cats(long_bycat):
+                                wc = to_wide_one_cat(long_bycat, cat, all_months)
+                                wc.insert(0, "Category", cat)
+                                frames.append(wc)
+                            pd.concat(frames, ignore_index=True).to_excel(
+                                w, sheet_name="ByCategory", index=False
+                            )
                         buf.seek(0)
 
                     st.session_state["rpt_summary"] = wide_summary
@@ -373,41 +366,11 @@ if _nav_page == "Performance Report":
                     st.session_state["rpt_opts"] = _opts
 
     if "rpt_summary" in st.session_state:
-        with st.container(border=True):
-            card_title("Results", icon="insert_chart")
-            if st.session_state.get("rpt_opts") != _opts:
-                st.info("Options have changed; press **Run** to refresh the report.")
-            _report_customers = list(st.session_state["rpt_opts"][4])
-            st.markdown(
-                "**Customer(s):** "
-                + "\u3000".join(f"`{c}`" for c in _report_customers)
-            )
-
-            _summary = st.session_state["rpt_summary"]
-            _long_bycat = st.session_state["rpt_long_bycat"]
-            _others = st.session_state["rpt_others"]
-            _buf = st.session_state["rpt_buf"]
-            _has_des = st.session_state["rpt_has_des"]
-
-            tab_labels = [":material/summarize: Summary"]
-            if not _long_bycat.empty:
-                tab_labels.append(":material/donut_small: By Category")
-            tabs = st.tabs(tab_labels)
-
-            with tabs[0]:
-                st.dataframe(fmt(_summary), use_container_width=True)
-
-            if not _long_bycat.empty:
-                with tabs[1]:
-                    show_bycat(_long_bycat)
-
-            st.download_button(
-                "Download Excel Report",
-                icon=":material/download:",
-                data=_buf,
-                file_name=datetime.now().strftime("sales_report_%Y%m%d_%H%M.xlsx"),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        _summary = st.session_state["rpt_summary"]
+        _long_bycat = st.session_state["rpt_long_bycat"]
+        _others = st.session_state["rpt_others"]
+        _buf = st.session_state["rpt_buf"]
+        _has_des = st.session_state["rpt_has_des"]
 
         if not _others.empty:
             with st.container(border=True):
@@ -465,6 +428,34 @@ if _nav_page == "Performance Report":
                             "override(s) matched **0 rows** in the current data (the "
                             f"underlying row may no longer exist): {_unmatched_str}"
                         )
+
+        with st.container(border=True):
+            card_title("Results", icon="insert_chart")
+            if st.session_state.get("rpt_opts") != _opts:
+                st.info("Options have changed; press **Run** to refresh the report.")
+            _report_customers = list(st.session_state["rpt_opts"][3])
+            st.markdown(
+                "**Customer(s):** "
+                + "\u3000".join(f"`{c}`" for c in _report_customers)
+            )
+
+            _col_summary, _col_cat = st.columns(2)
+            with _col_summary:
+                with st.container(border=True):
+                    card_title("Summary", icon="summarize")
+                    st.table(style_report_table(_summary))
+            with _col_cat:
+                with st.container(border=True):
+                    card_title("By Category", icon="donut_small")
+                    show_bycat(_long_bycat)
+
+            st.download_button(
+                "Download Excel Report",
+                icon=":material/download:",
+                data=_buf,
+                file_name=datetime.now().strftime("sales_report_%Y%m%d_%H%M.xlsx"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 # -- PAGE: Shipping Record Search ----------------------------------
 if _nav_page == "Shipping Record Search":
