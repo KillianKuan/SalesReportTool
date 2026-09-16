@@ -2,6 +2,7 @@
 
 import functools
 import hashlib
+import html
 import json
 import os
 import re
@@ -350,6 +351,64 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
 .sr-kpi-delta-neg {{ background-color: {palette.NEGATIVE_BG}; color: {palette.NEGATIVE}; }}
 .sr-kpi-delta-na {{ background-color: {palette.MUTED_BG}; color: {palette.MUTED}; }}
 .sr-kpi-caption {{ font-size: 12px; color: var(--text-color); opacity: 0.65; margin-top: 2px; }}
+
+/* Report tables and PR headings key every color off `currentColor` (the
+   real, correctly-inherited text color) rather than `var(--text-color)` /
+   `var(--secondary-background-color)` / `var(--primary-color)` — this
+   Streamlit version does not actually define those as CSS custom
+   properties (confirmed: `var(--text-color, red)` resolves to red at the
+   document root), so anything other than the `color` property itself
+   would silently fall back to `transparent`/initial for non-inherited
+   properties like `background-color`. `currentColor` needs no such
+   variable: it just reads the element's own (correctly inherited) `color`,
+   so tinting backgrounds/borders off it stays theme-correct for free. */
+.sr-report-table-wrap {{
+    width: 100%;
+    overflow-x: auto;
+    margin-bottom: 8px;
+}}
+.sr-report-table {{
+    border-collapse: collapse;
+    width: 100%;
+    min-width: max-content;
+    font-size: 14px;
+}}
+.sr-report-table th, .sr-report-table td {{
+    padding: 6px 14px;
+    white-space: nowrap;
+    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}}
+.sr-report-table thead th {{
+    background-color: color-mix(in srgb, currentColor 10%, transparent);
+    font-weight: 600;
+    text-align: left;
+}}
+.sr-report-table tbody td:first-child {{
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
+    font-weight: 600;
+    text-align: left;
+}}
+.sr-report-table tbody td:not(:first-child) {{
+    text-align: left;
+}}
+.sr-report-table tbody tr:nth-child(even) td:not(:first-child) {{
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+}}
+.sr-report-table tbody tr:hover td {{
+    background-color: color-mix(in srgb, currentColor 16%, transparent) !important;
+}}
+
+.sr-pr-heading {{
+    display: flex;
+    align-items: center;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    border-radius: 6px;
+    border-left: 4px solid color-mix(in srgb, currentColor 55%, transparent);
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
+}}
 </style>
 """,
         unsafe_allow_html=True,
@@ -872,25 +931,6 @@ def sorted_cats(long_bycat):
     return ordered
 
 
-def fmt(df_display):
-    nc = [c for c in df_display.columns if c != df_display.columns[0]]
-    num_idx = df_display.index[
-        (df_display.iloc[:, 0] != "GP%") &
-        (df_display.iloc[:, 0] != "---") &
-        (~df_display.iloc[:, 0].str.startswith("FCST", na=False))
-    ].tolist()
-    styled = df_display.style.format(
-        "{:,.0f}", subset=pd.IndexSlice[num_idx, nc], na_rep="0"
-    )
-    # For FCST rows, format as numbers
-    fcst_idx = df_display.index[df_display.iloc[:, 0].str.startswith("FCST", na=False)].tolist()
-    if fcst_idx:
-        styled = styled.format(
-            "{:,.0f}", subset=pd.IndexSlice[fcst_idx, nc], na_rep="0"
-        )
-    return styled
-
-
 def fmt_num(n) -> str:
     """Format a number with M/B/K suffix for KPI display. Returns 'N/A' for None/NaN."""
     import math
@@ -912,34 +952,84 @@ def fmt_num(n) -> str:
     return f"{'-' if n < 0 else ''}{abs_n:,.0f}"
 
 
-def style_report_table(df_display):
-    """Shared Performance Report table styling: numeric/percentage cell
-    formatting (via ``fmt()``) plus left-aligned value columns and
-    theme-compatible header colors.
+def _report_cell_text(label, value) -> str:
+    """Format one Performance Report table cell to display text.
 
-    Meant to be rendered with ``st.table`` rather than ``st.dataframe`` —
-    unlike ``st.dataframe``, ``st.table`` applies the full range of Pandas
-    Styler CSS (text-align, header colors) used here. Used by both the
-    Summary panel and every By Category table so they present identically.
+    Every row is a plain number (comma-grouped) except the "GP%" row —
+    and any legacy "---"/"FCST..." label rows a shared caller might still
+    pass in — which already carry pre-formatted display strings.
     """
-    value_cols = [c for c in df_display.columns if c != df_display.columns[0]]
-    return (
-        fmt(df_display)
-        .set_properties(subset=pd.IndexSlice[:, value_cols], **{"text-align": "left"})
-        .set_table_styles([
-            {"selector": "th", "props": [
-                ("background-color", "var(--secondary-background-color)"),
-                ("color", "var(--text-color)"),
-            ]},
-        ])
+    is_plain_row = label != "GP%" and label != "---" and not str(label).startswith("FCST")
+    if pd.isna(value):
+        return "0" if is_plain_row else str(value)
+    return f"{value:,.0f}" if is_plain_row else str(value)
+
+
+def pr_section_heading(text: str, icon: str | None = None) -> None:
+    """Consistent, theme-adaptive heading for Performance Report sections:
+    Filters, Results, Summary, By Category, and each category name (CDR,
+    Tablet, ...). Uses the ``.sr-pr-heading`` CSS from
+    ``inject_layout_css()``, which tints its background/border off
+    ``currentColor`` — see the comment there for why (this Streamlit
+    version doesn't actually expose ``--secondary-background-color`` /
+    ``--primary-color`` as usable CSS variables).
+
+    Mirrors ``components.card_title()``'s icon/text split (the
+    ``:material/...:`` shorthand only expands in plain markdown, not in
+    raw HTML), but is a separate class so it doesn't change the look of
+    ``card_title()`` on other pages.
+    """
+    if icon:
+        _icon_col, _text_col = st.columns([0.05, 0.95], gap="small")
+        with _icon_col:
+            st.markdown(f":material/{icon}:")
+        with _text_col:
+            st.markdown(f'<div class="sr-pr-heading">{text}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="sr-pr-heading">{text}</div>', unsafe_allow_html=True)
+
+
+def render_report_table(df_display: pd.DataFrame) -> None:
+    """Render a Performance Report table (Summary or a single category) as
+    a full-width, horizontally scrollable HTML table.
+
+    Uses the shared ``.sr-report-table`` CSS from ``inject_layout_css()``:
+    left-aligned numeric/percentage cells, a theme-colored header and
+    label column, zebra striping and row hover — all derived from
+    ``currentColor`` (see the comment in ``inject_layout_css()``), never a
+    hard-coded palette. Rendered as plain HTML (not
+    ``st.dataframe``/``st.table``) so columns keep a readable width and
+    overflow via horizontal scroll instead of being compressed or wrapped.
+    """
+    label_col = df_display.columns[0]
+    value_cols = [c for c in df_display.columns if c != label_col]
+
+    header_html = "".join(f"<th>{html.escape(str(c))}</th>" for c in df_display.columns)
+    body_rows = []
+    for _, row in df_display.iterrows():
+        label = row[label_col]
+        cells = [f"<td>{html.escape(str(label))}</td>"]
+        cells += [
+            f"<td>{html.escape(_report_cell_text(label, row[c]))}</td>"
+            for c in value_cols
+        ]
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    st.markdown(
+        '<div class="sr-report-table-wrap">'
+        '<table class="sr-report-table">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>",
+        unsafe_allow_html=True,
     )
 
 
 def show_bycat(long_bycat):
     all_months = sorted(long_bycat["Month"].unique().tolist())
     for cat in sorted_cats(long_bycat):
-        st.markdown(f"**{cat}**")
-        st.table(style_report_table(to_wide_one_cat(long_bycat, cat, all_months)))
+        pr_section_heading(cat)
+        render_report_table(to_wide_one_cat(long_bycat, cat, all_months))
 
 
 # ── Cached shipping search ────────────────────────────────────────

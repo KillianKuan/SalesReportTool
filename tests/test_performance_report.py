@@ -8,6 +8,7 @@ or `python3 -m unittest discover -s tests`.
 """
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import pandas as pd
@@ -167,29 +168,119 @@ class ReportOptionsStateTestCase(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
-class StyleReportTableTestCase(unittest.TestCase):
-    """The reusable table styling helper left-aligns value columns and
-    themes headers via CSS variables (not hard-coded colors)."""
+def _captured_markdown_html(render_fn) -> str:
+    """Call *render_fn* with utils.st.markdown patched to capture the raw
+    HTML/CSS string it renders, instead of only inspecting Pandas Styler
+    internals (which don't prove anything about what actually reaches the
+    browser)."""
+    captured = {}
 
-    def test_style_report_table_left_aligns_value_columns_only(self):
+    def fake_markdown(body, unsafe_allow_html=False):
+        captured["html"] = body
+        captured["unsafe_allow_html"] = unsafe_allow_html
+
+    with unittest.mock.patch.object(utils.st, "markdown", fake_markdown):
+        render_fn()
+    return captured["html"], captured["unsafe_allow_html"]
+
+
+class RenderReportTableTestCase(unittest.TestCase):
+    """render_report_table() renders a plain HTML table directly (no
+    st.dataframe/st.table), so its actual markup can be asserted on rather
+    than only a Styler's internal representation."""
+
+    def test_renders_scrollable_wrapper_and_table_classes(self):
+        df = pd.DataFrame({"Metric": ["QTY (All)"], "2024-01": [1234]})
+        html_out, unsafe = _captured_markdown_html(lambda: utils.render_report_table(df))
+        self.assertTrue(unsafe)
+        self.assertIn('class="sr-report-table-wrap"', html_out)
+        self.assertIn('class="sr-report-table"', html_out)
+
+    def test_plain_numeric_rows_are_comma_formatted(self):
+        df = pd.DataFrame({"Metric": ["QTY (All)"], "2024-01": [1234567]})
+        html_out, _ = _captured_markdown_html(lambda: utils.render_report_table(df))
+        self.assertIn("1,234,567", html_out)
+
+    def test_gp_percent_row_is_left_as_is(self):
         df = pd.DataFrame({
             "Metric": ["QTY (All)", "GP%"],
             "2024-01": [10, "20.0%"],
         })
-        styled = utils.style_report_table(df)
-        styled._compute()
-        ctx = styled._translate(False, False)
-        cell_props = [p for entry in ctx.get("cellstyle", []) for p in entry["props"]]
-        self.assertIn(("text-align", "left"), cell_props)
+        html_out, _ = _captured_markdown_html(lambda: utils.render_report_table(df))
+        self.assertIn("20.0%", html_out)
 
-    def test_style_report_table_header_uses_theme_css_variables(self):
-        df = pd.DataFrame({"Metric": ["QTY (All)"], "2024-01": [10]})
-        styled = utils.style_report_table(df)
-        ctx = styled._translate(False, False)
-        header_props = [p for s in ctx.get("table_styles", []) for p in s["props"]]
-        css_values = [str(v) for _, v in header_props]
-        self.assertTrue(any("var(--" in v for v in css_values))
-        self.assertFalse(any(v.strip().startswith("#") for v in css_values))
+    def test_label_cell_text_is_html_escaped(self):
+        df = pd.DataFrame({"Metric": ["<script>alert(1)</script>"], "2024-01": [5]})
+        html_out, _ = _captured_markdown_html(lambda: utils.render_report_table(df))
+        self.assertNotIn("<script>alert(1)</script>", html_out)
+        self.assertIn("&lt;script&gt;", html_out)
+
+
+class ReportTableCssTestCase(unittest.TestCase):
+    """inject_layout_css() defines the shared .sr-report-table styling used
+    by every Performance Report table: left-aligned value columns, a
+    theme-colored header/label column, and zebra/hover states.
+
+    These are keyed off `currentColor` (the element's real, inherited text
+    color) rather than `var(--text-color)` etc. — this Streamlit version
+    does not actually define those as usable CSS custom properties (a
+    `var(--text-color, red)` probe at the document root resolves to the
+    fallback red in both themes), so any *non-inherited* property built on
+    them (background-color, border-color) would silently render as
+    transparent instead of tracking the theme."""
+
+    def _report_table_css_block(self) -> str:
+        css, _ = _captured_markdown_html(utils.inject_layout_css)
+        start = css.index(".sr-report-table-wrap")
+        end = css.index("</style>", start)
+        return css[start:end]
+
+    def test_value_columns_are_left_aligned(self):
+        block = self._report_table_css_block()
+        self.assertIn(".sr-report-table tbody td:not(:first-child)", block)
+        self.assertIn("text-align: left", block)
+
+    def test_header_and_label_column_use_currentcolor_tinting(self):
+        block = self._report_table_css_block()
+        self.assertIn("thead th", block)
+        self.assertIn("color-mix(in srgb, currentColor", block)
+        self.assertNotIn("var(--secondary-background-color)", block)
+        self.assertNotIn("var(--primary-color)", block)
+
+    def test_zebra_and_hover_states_present(self):
+        block = self._report_table_css_block()
+        self.assertIn("nth-child(even)", block)
+        self.assertIn(":hover", block)
+        self.assertIn("color-mix(in srgb, currentColor", block)
+
+    def test_no_hardcoded_hex_colors(self):
+        block = self._report_table_css_block()
+        self.assertNotIn("#", block)
+
+
+class PrSectionHeadingTestCase(unittest.TestCase):
+    """pr_section_heading() gives Filters/Results/Summary/By Category/
+    per-category headings (CDR, Tablet, ...) one consistent, theme-adaptive
+    treatment, scoped to its own `.sr-pr-heading` class so it doesn't
+    change `card_title()`'s look on other pages (Company Dashboard,
+    Shipping Record Search, Settings)."""
+
+    def test_heading_without_icon_renders_sr_pr_heading_div(self):
+        html_out, unsafe = _captured_markdown_html(lambda: utils.pr_section_heading("CDR"))
+        self.assertTrue(unsafe)
+        self.assertIn('class="sr-pr-heading"', html_out)
+        self.assertIn("CDR", html_out)
+
+    def test_css_class_is_scoped_and_currentcolor_based(self):
+        css, _ = _captured_markdown_html(utils.inject_layout_css)
+        start = css.index(".sr-pr-heading")
+        end = css.index("}", start)
+        block = css[start:end]
+        self.assertIn("color-mix(in srgb, currentColor", block)
+        self.assertNotIn("#", block)
+        # Must not redefine the shared, page-neutral .sr-card-title class
+        # that Company Dashboard / Shipping Record Search / Settings use.
+        self.assertEqual(css.count(".sr-card-title {"), 1)
 
 
 if __name__ == "__main__":

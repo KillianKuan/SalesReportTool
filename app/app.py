@@ -21,7 +21,7 @@ from utils import (
     override_key, override_key_series,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
-    sorted_cats, show_bycat, style_report_table,
+    sorted_cats, show_bycat, render_report_table, pr_section_heading,
     cached_search_indices,
     calc_dashboard_kpis, build_monthly_trend,
     build_category_breakdown, build_monthly_category,
@@ -281,7 +281,7 @@ if st.sidebar.button(
 # -- PAGE: Performance Report -------------------------------------
 if _nav_page == "Performance Report":
     with st.container(border=True):
-        card_title("Filters", icon="filter_alt")
+        pr_section_heading("Filters", icon="filter_alt")
         _perf_year = st.radio(
             "Select year",
             options=available_years,
@@ -429,7 +429,7 @@ if _nav_page == "Performance Report":
                         )
 
         with st.container(border=True):
-            card_title("Results", icon="insert_chart")
+            pr_section_heading("Results", icon="insert_chart")
             if st.session_state.get("rpt_opts") != _opts:
                 st.info("Options have changed; press **Run** to refresh the report.")
             _report_customers = list(st.session_state["rpt_opts"][3])
@@ -438,15 +438,13 @@ if _nav_page == "Performance Report":
                 + "\u3000".join(f"`{c}`" for c in _report_customers)
             )
 
-            _col_summary, _col_cat = st.columns(2)
-            with _col_summary:
-                with st.container(border=True):
-                    card_title("Summary", icon="summarize")
-                    st.table(style_report_table(_summary))
-            with _col_cat:
-                with st.container(border=True):
-                    card_title("By Category", icon="donut_small")
-                    show_bycat(_long_bycat)
+            with st.container(border=True):
+                pr_section_heading("Summary", icon="summarize")
+                render_report_table(_summary)
+
+            with st.container(border=True):
+                pr_section_heading("By Category", icon="donut_small")
+                show_bycat(_long_bycat)
 
             st.download_button(
                 "Download Excel Report",
