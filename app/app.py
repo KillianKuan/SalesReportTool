@@ -30,11 +30,10 @@ from utils import (
     build_pn_detail,
     fmt_num,
     load_settings, save_settings, DEFAULT_SETTINGS,
-    inject_theme_css, resolve_theme_mode,
+    inject_layout_css,
     get_shipped_aliases, validate_alias_mappings,
 )
 from charts import (
-    apply_altair_theme,
     chart_up_tp_trend, chart_qty_by_year, chart_qty_by_month, chart_gp_pct_trend,
     chart_revenue_trend, chart_gp_dual_axis,
     chart_category_donut, chart_category_stacked, chart_ai_sw_revenue_trend,
@@ -42,7 +41,8 @@ from charts import (
     chart_customer_qty_by_cat,
     chart_revenue_trend_blended, chart_gp_trend_blended, chart_qty_trend_blended,
 )
-from theme import kpi_card, card_title, get_tokens
+from components import kpi_card, card_title
+from palette import POSITIVE, NEGATIVE
 
 st.set_page_config(
     page_title="Performance Report Analysis Tool",
@@ -52,10 +52,7 @@ st.set_page_config(
 
 if "app_settings" not in st.session_state:
     st.session_state["app_settings"] = load_settings()
-_theme_setting = st.session_state["app_settings"].get("theme", "system")
-inject_theme_css(_theme_setting)
-_theme_mode = resolve_theme_mode(_theme_setting)
-apply_altair_theme(_theme_mode)
+inject_layout_css()
 
 st.title(":material/insert_chart: Performance Report Data Analysis Tool")
 
@@ -195,6 +192,28 @@ if "SALE_Person" in all_df.columns:
                 for c in _sp_custs:
                     st.session_state[f"sp_cust__{c}"] = c in _sp_selected
 
+# -- Sidebar: Page navigation --------------------------------------
+_NAV_PAGES = [
+    ("Company Dashboard", "dashboard"),
+    ("Performance Report", "insert_chart"),
+    ("Shipping Record Search", "local_shipping"),
+]
+if "nav_page" not in st.session_state:
+    st.session_state["nav_page"] = "Company Dashboard"
+
+st.sidebar.markdown("")
+for _nav_label, _nav_icon in _NAV_PAGES:
+    _nav_is_active = st.session_state["nav_page"] == _nav_label
+    if st.sidebar.button(
+        f":material/{_nav_icon}: {_nav_label}",
+        key=f"nav_btn_{_nav_label}",
+        type="primary" if _nav_is_active else "secondary",
+        use_container_width=True,
+    ):
+        st.session_state["nav_page"] = _nav_label
+        st.rerun()
+_nav_page = st.session_state["nav_page"]
+
 # -- Sidebar: FCST + System Info ----------------------------------
 with st.sidebar.expander(":material/trending_up: FCST", expanded=False):
     _fcst_sheet = st.radio(
@@ -242,23 +261,25 @@ with st.sidebar.expander(":material/info: System Info", expanded=False):
             "row may no longer exist)."
         )
 
+# -- Sidebar: Settings (bottom of sidebar) --------------------------
+st.sidebar.markdown("")
+if st.sidebar.button(
+    ":material/settings: Settings",
+    key="nav_btn_Settings",
+    type="primary" if _nav_page == "Settings" else "secondary",
+    use_container_width=True,
+):
+    st.session_state["nav_page"] = "Settings"
+    st.rerun()
 
 # -- YoY comparison data (for Dashboard) -------------------------
 
 # ------------------------------------------------------------------
-# MAIN TABS
+# PAGES (only the active sidebar page renders)
 # ------------------------------------------------------------------
-main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(
-    [
-        ":material/insert_chart: Performance Report",
-        ":material/local_shipping: Shipping Record Search",
-        ":material/dashboard: Company Dashboard",
-        ":material/settings: Settings",
-    ]
-)
 
-# -- TAB 1: Performance Report -----------------------------------
-with main_tab1:
+# -- PAGE: Performance Report -------------------------------------
+if _nav_page == "Performance Report":
     with st.container(border=True):
         card_title("Filters", icon="filter_alt")
         _perf_col, _ = st.columns([2, 3])
@@ -445,8 +466,8 @@ with main_tab1:
                             f"underlying row may no longer exist): {_unmatched_str}"
                         )
 
-# -- TAB 2: Shipping Record Search -------------------------------
-with main_tab2:
+# -- PAGE: Shipping Record Search ----------------------------------
+if _nav_page == "Shipping Record Search":
     with st.container(border=True):
         card_title("Search", icon="local_shipping")
         _ship_col, _ = st.columns([2, 3])
@@ -616,13 +637,13 @@ with main_tab2:
             with _cc3:
                 card_title("GP% Monthly Trend")
                 st.altair_chart(
-                    chart_gp_pct_trend(results, mode=_theme_mode),
+                    chart_gp_pct_trend(results),
                     use_container_width=True,
                 )
 
         # -- GP% conditional formatting helper ---------------------------
-        _gp_pos_color = get_tokens(_theme_mode)["positive"]
-        _gp_neg_color = get_tokens(_theme_mode)["negative"]
+        _gp_pos_color = POSITIVE
+        _gp_neg_color = NEGATIVE
 
         def _color_gp_pct(val):
             if isinstance(val, str) and "%" in val:
@@ -689,8 +710,8 @@ with main_tab2:
                     hide_index=True,
                 )
 
-# -- TAB 3: Company Dashboard ------------------------------------
-with main_tab3:
+# -- PAGE: Company Dashboard -----------------------------------
+if _nav_page == "Company Dashboard":
     # -- Data prep (apply SALE_Person filter) ------------------------
     _dash_col, _ = st.columns([2, 3])
     with _dash_col:
@@ -730,6 +751,10 @@ with main_tab3:
     _current_yr = _now.year
     # Only blend when the current calendar year is in the selection
     _do_fcst = _dash_max_yr == _current_yr
+    # Cached for the Settings page, which renders independently and can't
+    # see this page's local variables when it — not Company Dashboard — is
+    # the active sidebar page.
+    st.session_state["_do_fcst"] = _do_fcst
 
     _fcst_raw = pd.DataFrame()
     _blended_raw = pd.DataFrame()
@@ -805,7 +830,7 @@ with main_tab3:
             if _dash_trend_metric == "Revenue":
                 if not _chart_data_blended.empty:
                     st.altair_chart(
-                        chart_revenue_trend_blended(_chart_data_blended, mode=_theme_mode),
+                        chart_revenue_trend_blended(_chart_data_blended),
                         use_container_width=True,
                     )
                 else:
@@ -816,7 +841,7 @@ with main_tab3:
             else:
                 if not _blended_monthly.empty:
                     st.altair_chart(
-                        chart_qty_trend_blended(_blended_monthly, mode=_theme_mode),
+                        chart_qty_trend_blended(_blended_monthly),
                         use_container_width=True,
                     )
                 else:
@@ -898,12 +923,12 @@ with main_tab3:
         card_title("Monthly Trends", icon="trending_up")
         if not _chart_data_blended.empty:
             st.altair_chart(
-                chart_gp_trend_blended(_chart_data_blended, mode=_theme_mode),
+                chart_gp_trend_blended(_chart_data_blended),
                 use_container_width=True,
             )
         else:
             st.altair_chart(
-                chart_gp_dual_axis(_trend, mode=_theme_mode),
+                chart_gp_dual_axis(_trend),
                 use_container_width=True,
             )
 
@@ -916,12 +941,12 @@ with main_tab3:
         with _cat_row1_c1:
             card_title("Revenue by Category")
             st.altair_chart(
-                chart_category_donut(_cat_br, mode=_theme_mode), use_container_width=True,
+                chart_category_donut(_cat_br), use_container_width=True,
             )
         with _cat_row1_c2:
             card_title("Category Revenue Trend")
             st.altair_chart(
-                chart_category_stacked(_cat_mo, mode=_theme_mode), use_container_width=True,
+                chart_category_stacked(_cat_mo), use_container_width=True,
             )
         if not _fcst_cat_monthly.empty:
             _cat_row2_c1, _cat_row2_c2 = st.columns(2)
@@ -930,7 +955,7 @@ with main_tab3:
         with _cat_row2_c1:
             card_title("AI_SW Monthly Revenue Trend")
             st.altair_chart(
-                chart_ai_sw_revenue_trend(_cat_mo, mode=_theme_mode), use_container_width=True,
+                chart_ai_sw_revenue_trend(_cat_mo), use_container_width=True,
             )
         if not _fcst_cat_monthly.empty:
             with _cat_row2_c2:
@@ -939,7 +964,7 @@ with main_tab3:
                     columns={"Cat": "Category", "Period": "Month"}
                 )
                 st.altair_chart(
-                    chart_category_stacked(_fcst_cat_display, mode=_theme_mode), use_container_width=True,
+                    chart_category_stacked(_fcst_cat_display), use_container_width=True,
                 )
 
     # -- Top Customers ---------------------------------------------------
@@ -954,13 +979,13 @@ with main_tab3:
         with _tn1:
             card_title(f"Top {_top_n} Customers by Revenue")
             st.altair_chart(
-                chart_top_customers_bar(_top, mode=_theme_mode), use_container_width=True,
+                chart_top_customers_bar(_top), use_container_width=True,
             )
         with _tn2:
             card_title(f"Top {_top_n} Customers")
 
-            _gp_pos_color = get_tokens(_theme_mode)["positive"]
-            _gp_neg_color = get_tokens(_theme_mode)["negative"]
+            _gp_pos_color = POSITIVE
+            _gp_neg_color = NEGATIVE
 
             def _gp_color(val):
                 try:
@@ -1116,19 +1141,19 @@ with main_tab3:
                         if not _blended_chart_df.empty:
                             card_title("Monthly Revenue (Actual + Forecast + Budget)")
                             st.altair_chart(
-                                chart_revenue_trend_blended(_blended_chart_df, mode=_theme_mode),
+                                chart_revenue_trend_blended(_blended_chart_df),
                                 use_container_width=True,
                             )
                         else:
                             card_title("Monthly Revenue")
                             st.altair_chart(
-                                chart_customer_monthly(_dm, mode=_theme_mode),
+                                chart_customer_monthly(_dm),
                                 use_container_width=True,
                             )
                     with _ddc2:
                         card_title("Category Breakdown")
                         st.altair_chart(
-                            chart_customer_cat_donut(_dcat, mode=_theme_mode),
+                            chart_customer_cat_donut(_dcat),
                             use_container_width=True,
                         )
 
@@ -1139,7 +1164,7 @@ with main_tab3:
                 if not _qty_cat.empty:
                     card_title("Monthly QTY by Category")
                     st.altair_chart(
-                        chart_customer_qty_by_cat(_qty_cat, mode=_theme_mode),
+                        chart_customer_qty_by_cat(_qty_cat),
                         use_container_width=True,
                     )
 
@@ -1170,8 +1195,8 @@ with main_tab3:
             else:
                 st.info("No data found for selected customer(s).")
 
-# -- TAB 4: Settings -----------------------------------------------
-with main_tab4:
+# -- PAGE: Settings --------------------------------------------
+if _nav_page == "Settings":
     st.header(":material/settings: Settings")
     st.caption(
         "Changes here are saved to `app/settings.json` immediately and "
@@ -1187,46 +1212,24 @@ with main_tab4:
         st.session_state["app_settings"] = load_settings()
         st.rerun()
 
+    # Company Dashboard renders independently now (sidebar page navigation,
+    # not tabs), so _do_fcst is only in scope here if that page has already
+    # run at least once in this session (cached via session_state).
+    _do_fcst = st.session_state.get("_do_fcst", False)
+
     # A st.radio (not st.tabs) is used for this sub-navigation: every edit in
-    # Section B/C calls st.rerun() to apply immediately, and st.tabs() resets
+    # Section A/B calls st.rerun() to apply immediately, and st.tabs() resets
     # to its first item on a programmatic rerun — a plain widget key survives it.
     _set_section = st.radio(
         "Settings section",
         [
-            ":material/palette: Theme",
             ":material/block: Customer Ignore List",
             ":material/link: Account Match",
         ],
         horizontal=True, label_visibility="collapsed", key="settings_section",
     )
 
-    # -- Section A: Theme --------------------------------------------
-    if _set_section == ":material/palette: Theme":
-        with st.container(border=True):
-            card_title("Theme", icon="palette")
-            _set_theme_labels = ["Light", "Dark", "System"]
-            _set_theme_to_label = {"light": "Light", "dark": "Dark", "system": "System"}
-            _set_label_to_theme = {v: k for k, v in _set_theme_to_label.items()}
-            _set_cur_label = _set_theme_to_label.get(_set_settings.get("theme", "system"), "System")
-            _set_new_label = st.radio(
-                "App theme", _set_theme_labels,
-                index=_set_theme_labels.index(_set_cur_label),
-                horizontal=True, key="settings_theme_radio",
-            )
-            _set_new_theme = _set_label_to_theme[_set_new_label]
-            if _set_new_theme != _set_settings.get("theme", "system"):
-                _set_settings["theme"] = _set_new_theme
-                _set_persist(_set_settings)
-            if _set_new_theme in ("light", "dark"):
-                st.caption(
-                    ":material/info: Applied immediately for this session. Restart the app for "
-                    "full native theming fidelity (some Streamlit chrome updates only after restart)."
-                )
-            if st.button("Reset Theme to Default", icon=":material/restart_alt:", key="settings_reset_theme"):
-                _set_settings["theme"] = DEFAULT_SETTINGS["theme"]
-                _set_persist(_set_settings)
-
-    # -- Section B: Customer Ignore List -------------------------------
+    # -- Section A: Customer Ignore List -------------------------------
     if _set_section == ":material/block: Customer Ignore List":
         with st.container(border=True):
             card_title("Customer Ignore List", icon="block")
@@ -1297,7 +1300,7 @@ with main_tab4:
                 _set_settings["ignored_customers"] = list(DEFAULT_SETTINGS["ignored_customers"])
                 _set_persist(_set_settings)
 
-    # -- Section C: Account Match (FCST <-> Performance Report) -------
+    # -- Section B: Account Match (FCST <-> Performance Report) -------
     if _set_section == ":material/link: Account Match":
         with st.container(border=True):
             card_title("Account Match (FCST ↔ Performance Report)", icon="link")
@@ -1481,7 +1484,7 @@ with main_tab4:
     if st.button("Reset ALL Settings to Default", icon=":material/restart_alt:", key="settings_reset_all", type="primary"):
         st.session_state["settings_confirm_reset_all"] = True
     if st.session_state.get("settings_confirm_reset_all"):
-        st.warning("This resets Theme, Ignore List, and Account Match to their shipped defaults.")
+        st.warning("This resets the Ignore List and Account Match to their shipped defaults.")
         _rc1, _rc2 = st.columns(2)
         if _rc1.button("Confirm Reset All", icon=":material/check:", key="settings_confirm_reset_all_btn"):
             save_settings(dict(DEFAULT_SETTINGS))

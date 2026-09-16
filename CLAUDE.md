@@ -82,12 +82,17 @@ DES_RULES（修改時需同步更新 `utils.py` 頂部字典）：
 
 ---
 
-## 使用者設定（⚙️ Settings tab / settings.json）
+## 使用者設定（⚙️ Settings 頁面 / settings.json）
 
-第 4 個主 tab（順序固定在 Company Dashboard 之後），讓一般使用者透過 UI 修改設定，不需編輯
-程式碼或 JSON。三個子區塊用 `st.radio`（非 `st.tabs`）切換——因為每次存檔都呼叫
-`st.rerun()`，`st.tabs()` 在 programmatic rerun 後會重置回第一個分頁，改用帶 `key` 的
-`st.radio` 才能保留使用者所在的子區塊。
+Sidebar 頁面導覽中固定釘在最底部（FCST / System Info 折疊區塊之後）的一頁，讓一般使用者
+透過 UI 修改設定，不需編輯程式碼或 JSON。兩個子區塊用 `st.radio`（非 `st.tabs`）切換——
+因為每次存檔都呼叫 `st.rerun()`，`st.tabs()` 在 programmatic rerun 後會重置回第一個分頁，
+改用帶 `key` 的 `st.radio` 才能保留使用者所在的子區塊。
+
+> **v4.1 起沒有 Theme 設定**：App 不再有自訂的 Light/Dark/System 主題系統，完全交給
+> Streamlit 原生主題（`.streamlit/config.toml` 或使用者自己在 Streamlit 選單切換）處理，
+> 詳見下方「關鍵設計決策」。舊版 `settings.json` 裡殘留的 `"theme"` key 會被安全忽略
+> （`DEFAULT_SETTINGS` 已無此 key，`load_settings()` 只讀取 schema 內的 key）。
 
 ### `app/settings.json`
 與 `overrides.json` 同等級的使用者可寫檔案：macOS 打包版的 `app/` 鏡射步驟會保留它
@@ -96,7 +101,6 @@ git-tracked 的出貨預設值；settings.json 在讀取時疊加在其上）。
 
 ```json
 {
-  "theme": "system",
   "ignored_customers": ["MITAC COMPUTERKUNSHAN COLTD"],
   "customer_aliases": {},
   "fcst_customer_aliases": {},
@@ -115,12 +119,7 @@ git-tracked 的出貨預設值；settings.json 在讀取時疊加在其上）。
   `load_historical_csv()` / `load_fcst()`（原本 300 秒 TTL）的 `@st.cache_data`
   立即失效重新載入，不用等 TTL 過期或重啟。
 
-### Section A — Theme
-Light / Dark / System（預設 System）。`utils.inject_theme_css()`：Light/Dark 透過
-`st.markdown()` 注入 CSS 覆蓋 `.stApp` 背景／文字色，當下 session 立即生效，並顯示一行
-提示「重新啟動可套用完整原生主題」；System 不注入任何 CSS。
-
-### Section B — Customer Ignore List
+### Section A — Customer Ignore List
 - 只用 Customer Name（normalized：去標點、大寫）比對，不支援 Part Number / sheet 層級。
 - **單一過濾路徑**：實際過濾邏輯是 `utils._apply_ignore_list()`，在
   `load_single_file()` / `load_historical_csv()` 回傳前執行；FCST 端在
@@ -129,7 +128,7 @@ Light / Dark / System（預設 System）。`utils.inject_theme_css()`：Light/Da
 - 兩邊都會統計被排除的列數（`ignored_count` 回傳值／`fcst_loader.get_ignored_row_count()`），
   UI 顯示合計，方便使用者 sanity-check。
 
-### Section C — Account Match（FCST ↔ Performance Report）
+### Section B — Account Match（FCST ↔ Performance Report）
 Performance Report 客戶名稱為 source of truth。`fcst_loader.normalize_fcst_customer()`
 查找順序（**settings.json 疊加在 aliases.json 之上，settings 優先**）：
 1. `aliases.json` "fcst_customer" + `settings.json` "fcst_customer_aliases" —— 先 exact，
@@ -183,7 +182,7 @@ FCST 的 AMT / GP 是千元，`_parse_sheet()` 在建立 record 時自動 ×1,00
 `aliases.json` 的 "fcst_customer" section（出貨預設值）+ `settings.json` 的
 `fcst_customer_aliases`（使用者透過 UI 新增／覆寫）：FCST 檔案名稱 → Performance Report
 正規化名稱。完整查找順序、Needs Mapping UI、Custom Groups 見上方
-「使用者設定（⚙️ Settings tab / settings.json）」章節。
+「使用者設定（⚙️ Settings 頁面 / settings.json）」章節。
 
 多個 FCST 名稱可對應同一個正規化名稱（如 Zonar-CDR + Zonar-Tablet → Zonar System Inc.）。
 
@@ -301,30 +300,53 @@ Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
 - **FCST aliases cache**: `_load_fcst_customer_aliases()` 使用 module-level
   `_ALIASES_CACHE`，每個 process 只讀一次 aliases.json；`settings.json` 的覆蓋值則每次
   即時讀取（不快取），確保 UI 存檔後立即生效。
-- **settings.json**: 與 `overrides.json` 同機制的使用者設定檔（theme / ignore list /
-  account match aliases / custom groups）。schema 預設值定義在 `utils.DEFAULT_SETTINGS`，
+- **settings.json**: 與 `overrides.json` 同機制的使用者設定檔（ignore list / account
+  match aliases / custom groups）。schema 預設值定義在 `utils.DEFAULT_SETTINGS`，
   容錯讀取（缺檔／壞檔 → 預設值，不 crash），永遠不寫回 `aliases.json`。macOS 打包版由
-  launcher 的 `USER_STATE_FILES` 保留。
+  launcher 的 `USER_STATE_FILES` 保留。舊檔殘留的 `"theme"` key 會被忽略（見下方
+  「沒有自訂 Theme 系統」）。
 - **Settings cache busting**: `_settings_hash()` 併入 `_rules_key()`，
   `fcst_loader.load_fcst()` 多帶一個 `settings_key` 參數，讓 ignore list / alias
   mapping 的變更立即讓 Performance Report、Historical、FCST 三邊的 cache 失效。
 - **Settings 子導覽用 st.radio 而非 st.tabs**: 每次存檔都呼叫 `st.rerun()`，
   `st.tabs()` 在 programmatic rerun 後會跳回第一個分頁；改用帶 `key` 的 `st.radio`
   才能保留使用者所在的子區塊。
+- **Sidebar 頁面導覽（v4.1+）取代水平主 tabs**: `app.py` 用 `st.session_state["nav_page"]`
+  + 一排 `st.sidebar.button()`（依 `type="primary"`/`"secondary"` 顯示目前所在頁面）取代
+  原本的 `st.tabs()` 四主分頁；每個頁面的內容區塊改成 `if _nav_page == "...":`（與原本
+  `with main_tabX:` 縮排完全相同，故內容本身不需重新縮排）。Sidebar 順序：Sales Person
+  篩選 → 頁面導覽按鈕（Company Dashboard / Performance Report / Shipping Record Search）
+  → FCST／System Info 折疊區塊 → Settings 按鈕（釘在最底部）。**重要**：因為只有目前選中
+  的頁面程式碼會執行（不像 `st.tabs()` 每個分頁的程式碼每次 rerun 都全部執行），Settings
+  頁面需要的 `_do_fcst`（來自 Company Dashboard 的 FCST 判斷）改用
+  `st.session_state["_do_fcst"]` 快取讀取，而非直接引用區域變數；新增跨頁共用變數前務必
+  檢查是否有同樣的作用域問題。
+- **沒有自訂 Theme 系統（v4.1 起）**: 移除了 `app/theme.py`、
+  `utils.inject_theme_css()`/`resolve_theme_mode()`、`charts.apply_altair_theme()`，
+  以及 Settings 的 Theme 子區塊。改由 Streamlit 原生主題（light/dark）處理一切色彩：
+  - `app/palette.py`：圖表 mark 顏色（CATEGORY_COLORS / SOURCE_COLORS）與 KPI 漲跌 pill
+    的 positive/negative/muted 色——固定單一色組，**不是** Light/Dark 雙色組，因為 Altair
+    mark 需要實際色碼、無法 inherit CSS 變數。
+  - `app/components.py`：`kpi_card()` / `card_title()`（原本在 `theme.py`），文字顏色改用
+    `var(--text-color)`（Streamlit 自動依主題設定的 CSS 變數）。
+  - `utils.inject_layout_css()`（取代 `inject_theme_css()`）：只調整 spacing / radius /
+    control 寬度 / sidebar 導覽外觀，不再硬編 Light/Dark 色票；sidebar 背景仍固定為品牌
+    深綠（`palette.PRIMARY`），因為它本來就不隨 light/dark 切換。
+  - `charts.py` 的每個 chart function 不再吃 `mode` 參數，也不再呼叫
+    `alt.theme.register(..., enable=True)` 搶主題——讓 `st.altair_chart()` 預設的
+    `theme="streamlit"` 自動依目前主題渲染軸線/圖例文字顏色。
 
 ---
 
 ## 目前版本
 
-v3.9（最新，已發版）— Windows 打包硬化，降低防毒軟體誤判（見 README Change Log）。
+v4.1（最新）— 移除自訂 Theme 系統，改用 Streamlit 原生 light/dark 主題；主導覽由水平
+main tabs 改為 sidebar 頁面導覽（Company Dashboard / Performance Report / Shipping
+Record Search + 釘在底部的 Settings）；`kpi_card()`/`card_title()` 移至新的
+`app/components.py`，圖表與 KPI pill 的固定色票移至新的 `app/palette.py`（見 README
+Change Log v4.1）。
 
-已合併（待下個 tag 發版）：⚙️ Settings tab（Theme / Customer Ignore List /
-Account Match）+ `settings.json` 持久化設定，settings hash 併入快取失效機制；
-macOS（Apple Silicon）打包與發版流程 — `build-mac.sh` 產出 arm64 `.app`、
-新增 `build-macos.yml`，一個 tag 同時產出雙平台 Release 產物；
-`launcher.mirror_app_dir()` 改為 atomic staging（複製到 `app.staging` → 還原
-user-state → 驗證必要檔案 → 兩次 `os.rename()` 生效），避免 `.app` 升級時出現
-新舊模組混雜或使用者自訂 alias 被覆蓋，新增 `tests/test_launcher_runtime_mirror.py`。
+v3.9 — Windows 打包硬化，降低防毒軟體誤判（見 README Change Log）。
 
 v3.6 — 資料夾結構重構（Over the Years / Current Year）。
 
@@ -333,9 +355,11 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 ### 核心模組
 | 檔案 | 職責 |
 |------|------|
-| `app.py` | Streamlit UI、tab 邏輯（含 ⚙️ Settings）、FCST/Budget blend 觸發、Customer Drill-Down FCST |
-| `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備、Settings 讀寫（`load_settings`/`save_settings`） |
-| `charts.py` | Altair 圖表函式（Actual / Forecast / Budget 三線並呈） |
+| `app.py` | Streamlit UI、sidebar 頁面導覽邏輯（含 ⚙️ Settings）、FCST/Budget blend 觸發、Customer Drill-Down FCST |
+| `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備、Settings 讀寫（`load_settings`/`save_settings`）、`inject_layout_css()` |
+| `charts.py` | Altair 圖表函式（Actual / Forecast / Budget 三線並呈），色彩取自 `palette.py`，主題交給 Streamlit 原生處理 |
+| `components.py` | `kpi_card()` / `card_title()` 中性 UI helper（繼承 Streamlit 色彩，不做主題切換） |
+| `palette.py` | 圖表 mark 與 KPI delta pill 的固定色票（非 Light/Dark 雙色組） |
 | `fcst_loader.py` | FCST Excel 解析、blend、Budget aggregation、customer name mapping（aliases.json + settings.json 疊加） |
 | `launcher.py` | 打包後入口；tray icon、單一實例、log、Windows/macOS 路徑分歧、`overrides.json`/`settings.json` 保留 |
 
