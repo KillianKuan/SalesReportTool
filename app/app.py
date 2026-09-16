@@ -339,11 +339,12 @@ if _nav_page == "Performance Report":
     df = all_df[all_df["Ship Date"].dt.year == _perf_year].copy()
     all_customers = sorted(df["Customer Name"].dropna().unique())
 
-    with st.container(border=True):
-        pr_section_heading("Select Year", icon="calendar_month")
-        _year_cols = st.columns(4)
-        for _i, _y in enumerate(available_years):
-            with _year_cols[_i % 4]:
+    _year_col, _cust_col = st.columns([1, 2])
+
+    with _year_col:
+        with st.container(border=True):
+            pr_section_heading("Select Year", icon="calendar_month")
+            for _y in available_years:
                 if st.button(
                     str(_y),
                     key=f"pr_cfg_year_btn_{_y}",
@@ -352,25 +353,23 @@ if _nav_page == "Performance Report":
                 ):
                     st.session_state["pr_cfg_year"] = _y
                     st.rerun()
-        st.caption("Reporting year for the analysis.")
+            st.caption("Reporting year for the analysis.")
 
-    with st.container(border=True):
-        pr_section_heading("Customer Selection", icon="group")
-        cust_query = st.text_input(
-            "Search customer by name",
-            key="pr_cfg_search",
-            placeholder="Search customer by name...",
-            label_visibility="collapsed",
-        )
-        matched = (
-            [c for c in all_customers if cust_query.strip().lower() in c.lower()]
-            if cust_query.strip() else all_customers
-        )
+    with _cust_col:
+        with st.container(border=True):
+            pr_section_heading("Customer Selection", icon="group")
+            cust_query = st.text_input(
+                "Search customer by name",
+                key="pr_cfg_search",
+                placeholder="Search customer by name...",
+                label_visibility="collapsed",
+            )
+            matched = (
+                [c for c in all_customers if cust_query.strip().lower() in c.lower()]
+                if cust_query.strip() else all_customers
+            )
 
-        _hdr_l, _hdr_r = st.columns([2, 1])
-        with _hdr_l:
             st.markdown(f"**{len(matched)} customer(s) found**")
-        with _hdr_r:
             _sa_col, _cl_col = st.columns(2)
             with _sa_col:
                 if st.button(
@@ -387,25 +386,25 @@ if _nav_page == "Performance Report":
                 ):
                     _pr_set_selection(_perf_year, matched, False)
 
-        if not matched:
-            st.info("No matching customers found.")
-        else:
-            _list_box = st.container(height=280) if len(matched) > 8 else st.container()
-            with _list_box:
-                _cust_cols = st.columns(2)
-                for _i, _c in enumerate(matched):
-                    _key = _pr_cust_key(_perf_year, _c)
-                    # Force-sync the checkbox's display value from the
-                    # canonical selection set before it is instantiated —
-                    # safe because this key hasn't been created yet this
-                    # run (see _pr_selected_set()'s docstring).
-                    st.session_state[_key] = _c in _pr_selected_set(_perf_year)
-                    with _cust_cols[_i % 2]:
-                        st.checkbox(
-                            _c, key=_key,
-                            on_change=_pr_sync_checkbox_to_selection,
-                            args=(_perf_year, _c, _key),
-                        )
+            if not matched:
+                st.info("No matching customers found.")
+            else:
+                _list_box = st.container(height=280) if len(matched) > 8 else st.container()
+                with _list_box:
+                    _cust_cols = st.columns(2)
+                    for _i, _c in enumerate(matched):
+                        _key = _pr_cust_key(_perf_year, _c)
+                        # Force-sync the checkbox's display value from the
+                        # canonical selection set before it is instantiated —
+                        # safe because this key hasn't been created yet this
+                        # run (see _pr_selected_set()'s docstring).
+                        st.session_state[_key] = _c in _pr_selected_set(_perf_year)
+                        with _cust_cols[_i % 2]:
+                            st.checkbox(
+                                _c, key=_key,
+                                on_change=_pr_sync_checkbox_to_selection,
+                                args=(_perf_year, _c, _key),
+                            )
 
     selected_keyword = _pr_selected_customers(_perf_year, all_customers)
     selected_sp = [
