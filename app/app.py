@@ -18,7 +18,9 @@ from utils import (
     DATA_DIR, CAT_ORDER, _rules_key, _normalize_name,
     HISTORICAL_CSV, scan_current_year_folder,
     load_single_file, load_historical_csv, load_overrides, save_overrides,
-    override_key, override_key_series,
+    override_key, override_key_series, override_key_id,
+    override_assignment_options, set_override, reset_override,
+    RESET_OVERRIDE_CHOICE,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
     sorted_cats, show_bycat, render_report_table, pr_section_heading,
@@ -494,9 +496,7 @@ if _nav_page == "Performance Report":
         if not _others.empty:
             with st.container(border=True):
                 card_title(f"Others ({len(_others)} row(s)) — review & reassign category", icon="warning")
-                _override_opts = ["Others (keep)"] + [
-                    c for c in CAT_ORDER if c != "Others"
-                ]
+                _override_opts = override_assignment_options()
                 with st.expander("Show rows"):
                     for _i, _row in _others.iterrows():
                         _ok = override_key(
@@ -516,10 +516,10 @@ if _nav_page == "Performance Report":
                             )
                         with _c2:
                             _cur = st.session_state["others_overrides"].get(
-                                _ok, "Others (keep)"
+                                _ok, RESET_OVERRIDE_CHOICE
                             )
                             if _cur not in _override_opts:
-                                _cur = "Others (keep)"
+                                _cur = RESET_OVERRIDE_CHOICE
                             _choice = st.selectbox(
                                 "Reassign",
                                 _override_opts,
@@ -527,7 +527,7 @@ if _nav_page == "Performance Report":
                                 key=f"override_{_i}_{'__'.join(_ok)}",
                                 label_visibility="collapsed",
                             )
-                            if _choice != "Others (keep)":
+                            if _choice != RESET_OVERRIDE_CHOICE:
                                 st.session_state["others_overrides"][_ok] = _choice
                                 save_overrides(st.session_state["others_overrides"])
                             elif _ok in st.session_state["others_overrides"]:
@@ -547,6 +547,80 @@ if _nav_page == "Performance Report":
                             "override(s) matched **0 rows** in the current data (the "
                             f"underlying row may no longer exist): {_unmatched_str}"
                         )
+
+        with st.container(border=True):
+            card_title("Manage saved reassignments", icon="rule_settings")
+            _saved_overrides = st.session_state["others_overrides"]
+            _unmatched_keys = set(st.session_state.get("unmatched_overrides", []))
+            with st.expander(
+                f"Show saved overrides ({len(_saved_overrides)})",
+                expanded=False,
+            ):
+                if not _saved_overrides:
+                    st.caption(
+                        "No saved reassignments yet. Reassign an Others row above "
+                        "to create one."
+                    )
+                else:
+                    _manage_opts = override_assignment_options()
+                    for _mk in sorted(_saved_overrides.keys()):
+                        # Tolerate malformed legacy keys (wrong arity) instead of
+                        # crashing the whole manager over one bad entry.
+                        if not isinstance(_mk, tuple) or len(_mk) != 4:
+                            continue
+                        _cust, _pn, _mo, _des = _mk
+                        _mid = override_key_id(_mk)
+                        _mcur = _saved_overrides.get(_mk, RESET_OVERRIDE_CHOICE)
+                        if _mcur not in _manage_opts:
+                            # Unrecognized/legacy category value: still show the
+                            # row and let the user fix or reset it.
+                            _manage_opts_row = _manage_opts + [_mcur]
+                        else:
+                            _manage_opts_row = _manage_opts
+                        _m1, _m2, _m3 = st.columns([4, 2, 1])
+                        with _m1:
+                            _des_str = f" | DES: {_des}" if _des else ""
+                            st.markdown(
+                                f"**{_cust or '(no customer)'}**&nbsp;&nbsp;"
+                                f"`{_pn or '(no P/N)'}`{_des_str}&nbsp;&nbsp;"
+                                f"Month: **{_mo or '—'}**"
+                            )
+                            if _mk in _unmatched_keys:
+                                st.caption(
+                                    ":material/warning: No rows in the current "
+                                    "data match this saved override."
+                                )
+                        with _m2:
+                            _mchoice = st.selectbox(
+                                "Category",
+                                _manage_opts_row,
+                                index=_manage_opts_row.index(_mcur),
+                                key=f"manage_override_sel_{_mid}",
+                                label_visibility="collapsed",
+                            )
+                            if _mchoice != _mcur:
+                                if set_override(
+                                    st.session_state["others_overrides"], _mk, _mchoice
+                                ):
+                                    st.toast(
+                                        f"Saved override updated to **{_mchoice}**.",
+                                        icon=":material/check_circle:",
+                                    )
+                                    st.rerun()
+                        with _m3:
+                            if st.button(
+                                "Reset", key=f"manage_override_reset_{_mid}",
+                                use_container_width=True,
+                            ):
+                                if reset_override(
+                                    st.session_state["others_overrides"], _mk
+                                ):
+                                    st.toast(
+                                        "Override reset; row returns to Others on "
+                                        "the next report generation.",
+                                        icon=":material/check_circle:",
+                                    )
+                                    st.rerun()
 
         with st.container(border=True):
             pr_section_heading("Results", icon="insert_chart")
