@@ -102,6 +102,47 @@ def override_key_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series(list(zip(cust, pn, month, des)), index=df.index)
 
 
+def override_key_id(key: tuple) -> str:
+    """Short, deterministic, collision-resistant id for an override key tuple
+    (Customer Name, Part Number, Month, DES), for use in Streamlit widget keys.
+    Field values may contain arbitrary characters, so a delimiter-joined
+    string isn't safe on its own - hash it instead."""
+    raw = "\x1f".join(key)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+RESET_OVERRIDE_CHOICE = "Others (keep)"
+
+
+def override_assignment_options() -> list[str]:
+    """Valid choices for a reassignment/management selectbox: the sentinel
+    for 'no override' followed by every real category except Others."""
+    return [RESET_OVERRIDE_CHOICE] + [c for c in CAT_ORDER if c != "Others"]
+
+
+def set_override(overrides: dict, key: tuple, category: str) -> bool:
+    """Update or remove a single override entry and persist immediately.
+    *category* == RESET_OVERRIDE_CHOICE (or falsy) removes the entry, restoring
+    the row to the normal classification flow. Returns True if *overrides*
+    was actually modified (a no-op reassignment is not re-saved)."""
+    if not category or category == RESET_OVERRIDE_CHOICE:
+        if key not in overrides:
+            return False
+        del overrides[key]
+    else:
+        if overrides.get(key) == category:
+            return False
+        overrides[key] = category
+    save_overrides(overrides)
+    return True
+
+
+def reset_override(overrides: dict, key: tuple) -> bool:
+    """Delete a single saved override and persist immediately. Returns True
+    if the key existed (and was removed)."""
+    return set_override(overrides, key, RESET_OVERRIDE_CHOICE)
+
+
 def save_overrides(ov):
     """Keys must already be normalized via override_key(). Raises on failure
     (e.g. a non-serializable value) so bugs surface during development instead
