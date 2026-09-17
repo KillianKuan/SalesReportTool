@@ -32,6 +32,8 @@ freely update its defaults on every upgrade without ever touching a user's
 custom mappings, since they live in a different file.
 """
 
+from __future__ import annotations
+
 import atexit
 import json
 import os

@@ -6,6 +6,8 @@ accent from palette.py — never a Light/Dark palette. See inject_layout_css()
 in utils.py for the CSS classes these helpers render into.
 """
 
+from __future__ import annotations
+
 import streamlit as st
 
 from palette import NEGATIVE, NEGATIVE_BG, POSITIVE, POSITIVE_BG, MUTED_BG

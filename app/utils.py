@@ -1,5 +1,7 @@
 """utils.py — Data loading, cleaning, classification, and report helpers."""
 
+from __future__ import annotations
+
 import functools
 import hashlib
 import html
