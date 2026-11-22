@@ -135,6 +135,47 @@ class ResetOverrideTestCase(unittest.TestCase):
         self.mock_save.assert_called_once_with(self.overrides)
 
 
+class GroupOthersByOverrideKeyTestCase(unittest.TestCase):
+    """The Others list must show one control per override key: rows that share
+    a key would otherwise overwrite each other's saved reassignment."""
+
+    @staticmethod
+    def _df():
+        return pd.DataFrame({
+            "Customer Name": ["Acme", "Acme", "Acme", "Beta"],
+            "Part Number": ["P1", "P1", "P2", "P1"],
+            "Month": ["2024-01", "2024-01", "2024-01", "2024-01"],
+            "DES": ["d", "d", "d", "d"],
+            "SALES Total AMT": [100, 50, 7, 1],
+        })
+
+    def test_rows_sharing_a_key_collapse_into_one_entry(self):
+        groups = utils.group_others_by_override_key(self._df(), has_des=True)
+        self.assertEqual(len(groups), 3)
+        first = groups[0]
+        self.assertEqual(first["key"], utils.override_key("Acme", "P1", "2024-01", "d"))
+        self.assertEqual(first["row_count"], 2)
+        self.assertEqual(first["amount"], 150)
+
+    def test_keys_are_unique_and_first_seen_order_is_kept(self):
+        groups = utils.group_others_by_override_key(self._df(), has_des=True)
+        keys = [g["key"] for g in groups]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual([g["part_number"] for g in groups], ["P1", "P2", "P1"])
+
+    def test_without_des_column_des_is_ignored(self):
+        df = self._df().drop(columns="DES")
+        groups = utils.group_others_by_override_key(df, has_des=False)
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(groups[0]["des"], "")
+
+    def test_nan_amount_counts_as_zero(self):
+        df = self._df()
+        df.loc[0, "SALES Total AMT"] = float("nan")
+        groups = utils.group_others_by_override_key(df, has_des=True)
+        self.assertEqual(groups[0]["amount"], 50)
+
+
 class QtyEligibilityUnaffectedByOverridesTestCase(unittest.TestCase):
     """Overrides only change which Category a row is classified into before
     build_bycat() runs; the QTY-only inclusion rule itself must be

@@ -20,6 +20,7 @@ from utils import (
     load_single_file, load_historical_csv, load_overrides, save_overrides,
     override_key, override_key_series, override_key_id,
     override_assignment_options, set_override, reset_override,
+    group_others_by_override_key,
     RESET_OVERRIDE_CHOICE,
     build_summary, build_bycat,
     to_wide_summary, to_wide_one_cat,
@@ -497,22 +498,31 @@ if _nav_page == "Performance Report":
             with st.container(border=True):
                 card_title(f"Others ({len(_others)} row(s)) — review & reassign category", icon="warning")
                 _override_opts = override_assignment_options()
+                def _on_others_override_change(_ok, _wk):
+                    # Runs only when the user changes this selectbox (not on every
+                    # rerun), so a stale widget value can never overwrite a change
+                    # made elsewhere (e.g. Reset in "Manage saved reassignments").
+                    set_override(
+                        st.session_state["others_overrides"], _ok, st.session_state[_wk]
+                    )
+
                 with st.expander("Show rows"):
-                    for _i, _row in _others.iterrows():
-                        _ok = override_key(
-                            _row["Customer Name"],
-                            _row["Part Number"],
-                            _row["Month"],
-                            _row["DES"] if _has_des else "",
-                        )
+                    # One control per override key: rows sharing a key share one
+                    # override, and separate controls would overwrite each other.
+                    for _g in group_others_by_override_key(_others, _has_des):
+                        _ok = _g["key"]
                         _c1, _c2 = st.columns([4, 1])
                         with _c1:
-                            _des_str = f" | DES: {_row['DES']}" if _has_des else ""
-                            _pn_display = _ok[1] if _ok[1] else "(no P/N)"
+                            _des_str = f" | DES: {_g['des']}" if _has_des else ""
+                            _pn_display = _g["part_number"] or "(no P/N)"
+                            _n_str = (
+                                f"&nbsp;&nbsp;({_g['row_count']} rows)"
+                                if _g["row_count"] > 1 else ""
+                            )
                             st.markdown(
                                 f"`{_pn_display}`{_des_str}&nbsp;&nbsp;"
-                                f"Month: **{_row['Month']}** | "
-                                f"AMT: {int(_row['SALES Total AMT']):,}"
+                                f"Month: **{_g['month']}** | "
+                                f"AMT: {_g['amount']:,}{_n_str}"
                             )
                         with _c2:
                             _cur = st.session_state["others_overrides"].get(
@@ -520,19 +530,18 @@ if _nav_page == "Performance Report":
                             )
                             if _cur not in _override_opts:
                                 _cur = RESET_OVERRIDE_CHOICE
-                            _choice = st.selectbox(
+                            _wk = f"override_{override_key_id(_ok)}"
+                            # Keep the widget in sync with the saved override
+                            # (index is not passed: session state owns the value).
+                            st.session_state[_wk] = _cur
+                            st.selectbox(
                                 "Reassign",
                                 _override_opts,
-                                index=_override_opts.index(_cur),
-                                key=f"override_{_i}_{'__'.join(_ok)}",
+                                key=_wk,
                                 label_visibility="collapsed",
+                                on_change=_on_others_override_change,
+                                args=(_ok, _wk),
                             )
-                            if _choice != RESET_OVERRIDE_CHOICE:
-                                st.session_state["others_overrides"][_ok] = _choice
-                                save_overrides(st.session_state["others_overrides"])
-                            elif _ok in st.session_state["others_overrides"]:
-                                del st.session_state["others_overrides"][_ok]
-                                save_overrides(st.session_state["others_overrides"])
                     if st.session_state["others_overrides"]:
                         st.info(
                             "Overrides updated; press **Generate Report** to apply them to the report."
@@ -568,6 +577,14 @@ if _nav_page == "Performance Report":
                     # *before* sorting so a bad key can't break the sort, and
                     # iterate a snapshot: set_override/reset_override mutate
                     # _saved_overrides (each followed by an immediate st.rerun()).
+                    def _on_manage_override_change(_mk, _wk):
+                        _new = st.session_state[_wk]
+                        if set_override(st.session_state["others_overrides"], _mk, _new):
+                            st.toast(
+                                f"Saved override updated to **{_new}**.",
+                                icon=":material/check_circle:",
+                            )
+
                     _valid_mks = [
                         k for k in _saved_overrides
                         if isinstance(k, tuple) and len(k) == 4
@@ -596,22 +613,20 @@ if _nav_page == "Performance Report":
                                     "data match this saved override."
                                 )
                         with _m2:
-                            _mchoice = st.selectbox(
+                            _msel_key = f"manage_override_sel_{_mid}"
+                            # Keep in sync with the saved value (e.g. after the
+                            # Others list changed it). The user's own change is
+                            # applied by the on_change callback, which runs
+                            # before this line on the following rerun.
+                            st.session_state[_msel_key] = _mcur
+                            st.selectbox(
                                 "Category",
                                 _manage_opts_row,
-                                index=_manage_opts_row.index(_mcur),
-                                key=f"manage_override_sel_{_mid}",
+                                key=_msel_key,
                                 label_visibility="collapsed",
+                                on_change=_on_manage_override_change,
+                                args=(_mk, _msel_key),
                             )
-                            if _mchoice != _mcur:
-                                if set_override(
-                                    st.session_state["others_overrides"], _mk, _mchoice
-                                ):
-                                    st.toast(
-                                        f"Saved override updated to **{_mchoice}**.",
-                                        icon=":material/check_circle:",
-                                    )
-                                    st.rerun()
                         with _m3:
                             if st.button(
                                 "Reset", key=f"manage_override_reset_{_mid}",

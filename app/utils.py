@@ -115,6 +115,37 @@ def override_key_id(key: tuple) -> str:
     return hashlib.blake2s(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 
+def group_others_by_override_key(others_df: pd.DataFrame, has_des: bool) -> list[dict]:
+    """Collapse the Others rows to one entry per override key.
+
+    An override applies to every row sharing (Customer Name, Part Number, Month,
+    DES), so the reassignment UI must show exactly one control per key; several
+    controls for the same key overwrite each other's saved value. Each entry has
+    ``key``, ``part_number``, ``month``, ``des``, ``row_count`` and ``amount``
+    (sum of SALES Total AMT), in first-seen order.
+    """
+    groups: dict[tuple, dict] = {}
+    for _, row in others_df.iterrows():
+        key = override_key(
+            row["Customer Name"], row["Part Number"], row["Month"],
+            row["DES"] if has_des else "",
+        )
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "key": key,
+                "part_number": key[1],
+                "month": row["Month"],
+                "des": row["DES"] if has_des else "",
+                "row_count": 0,
+                "amount": 0,
+            }
+        g["row_count"] += 1
+        amt = row["SALES Total AMT"]
+        g["amount"] += 0 if pd.isna(amt) else int(amt)
+    return list(groups.values())
+
+
 RESET_OVERRIDE_CHOICE = "Others (keep)"
 
 
