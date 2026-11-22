@@ -12,6 +12,11 @@ if [ -f venv-mac/bin/activate ]; then
   source venv-mac/bin/activate
 fi
 
+# This script opens the browser itself; headless also skips Streamlit's
+# first-run "Email:" prompt, which would otherwise block the server.
+export STREAMLIT_SERVER_HEADLESS=true
+export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
 ( sleep 3 && open "http://localhost:8501" ) &
 
 ./run.sh
