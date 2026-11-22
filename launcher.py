@@ -35,8 +35,10 @@ custom mappings, since they live in a different file.
 from __future__ import annotations
 
 import atexit
+import getpass
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -81,7 +83,18 @@ class RuntimeMirrorError(RuntimeError):
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 
-_LOCK_FILE = Path(tempfile.gettempdir()) / "salesreport.lock"
+def _lock_file_path() -> Path:
+    """Per-user lock path, so users sharing one machine (shared temp dir)
+    don't see or delete each other's single-instance lock."""
+    try:
+        user = getpass.getuser()
+    except Exception:  # getuser() can raise on odd environments (no pwd entry)
+        user = str(os.getpid())
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", user) or "user"
+    return Path(tempfile.gettempdir()) / f"salesreport-{safe}.lock"
+
+
+_LOCK_FILE = _lock_file_path()
 
 # Module-level so tray menu callback can read it without a closure
 _log_path: Path | None = None
@@ -409,7 +422,7 @@ def _close_log() -> None:
         try:
             _log_file.flush()
             _log_file.close()
-        except Exception:
+        except (OSError, ValueError):
             pass
         _log_file = None
 
@@ -482,7 +495,7 @@ def is_child_mode() -> bool:
 def read_lock() -> dict | None:
     try:
         return json.loads(_LOCK_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -493,8 +506,8 @@ def write_lock(pid: int, port: int) -> None:
 def remove_lock() -> None:
     try:
         _LOCK_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except OSError:
+        pass  # best-effort cleanup
 
 
 def check_single_instance() -> None:
@@ -510,7 +523,7 @@ def check_single_instance() -> None:
             return
 
         port = int(lock["port"])
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         # Malformed lock - remove and continue
         remove_lock()
         return
@@ -544,8 +557,8 @@ def _make_icon_image():
         if path.exists():
             try:
                 return Image.open(path).convert("RGBA").resize((64, 64))
-            except Exception:
-                pass
+            except (OSError, ValueError):
+                print(f"WARNING: could not load tray icon {path}", file=sys.stderr)
 
     # Fallback: draw a 3-bar ascending chart on a transparent background
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -626,17 +639,20 @@ def _show_fatal(msg: str) -> None:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, msg, "Sales Report Tool - Error", 0x10)
             return
-        except Exception:
+        except (OSError, AttributeError, ImportError):
             pass
     elif IS_MACOS:
         try:
+            # json.dumps yields a valid AppleScript string literal (\" and \\
+            # escapes); ensure_ascii=False because AppleScript doesn't understand
+            # \uXXXX escapes and would show them literally.
             script = (
-                f"display dialog {json.dumps(msg)} "
+                f"display dialog {json.dumps(msg, ensure_ascii=False)} "
                 'with title "Sales Report Tool" buttons {"OK"} with icon stop'
             )
             subprocess.Popen(["osascript", "-e", script])
             return
-        except Exception:
+        except OSError:
             pass
     print(msg, file=sys.stderr)
 

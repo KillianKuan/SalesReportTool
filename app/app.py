@@ -563,11 +563,16 @@ if _nav_page == "Performance Report":
                     )
                 else:
                     _manage_opts = override_assignment_options()
-                    for _mk in sorted(_saved_overrides.keys()):
-                        # Tolerate malformed legacy keys (wrong arity) instead of
-                        # crashing the whole manager over one bad entry.
-                        if not isinstance(_mk, tuple) or len(_mk) != 4:
-                            continue
+                    # Tolerate malformed legacy keys (wrong arity) instead of
+                    # crashing the whole manager over one bad entry. Filter
+                    # *before* sorting so a bad key can't break the sort, and
+                    # iterate a snapshot: set_override/reset_override mutate
+                    # _saved_overrides (each followed by an immediate st.rerun()).
+                    _valid_mks = [
+                        k for k in _saved_overrides
+                        if isinstance(k, tuple) and len(k) == 4
+                    ]
+                    for _mk in sorted(_valid_mks):
                         _cust, _pn, _mo, _des = _mk
                         _mid = override_key_id(_mk)
                         _mcur = _saved_overrides.get(_mk, RESET_OVERRIDE_CHOICE)

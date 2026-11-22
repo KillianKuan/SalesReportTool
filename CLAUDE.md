@@ -286,7 +286,7 @@ Developer ID 憑證後在 zip 步驟前加入 `codesign` + `xcrun notarytool`。
   `settings.json` 的 `customer_aliases`/`fcst_customer_aliases`（讀取時疊加，見上方
   「Account Match」），兩層分開儲存所以不會互相覆蓋。測試見
   `tests/test_launcher_runtime_mirror.py`（`python3 -m unittest discover -s tests`）。
-- **Single-instance 保護**: 啟動時檢查 `TEMP/salesreport.lock`（JSON 含 PID + port）。
+- **Single-instance 保護**: 啟動時檢查 `TEMP/salesreport-<user>.lock`（每位使用者各自一個）（JSON 含 PID + port）。
   以 port 是否仍在服務判斷存活（`os.kill(pid, 0)` 在 Windows 不可靠）：port 有回應 →
   開瀏覽器到已執行的 instance + sys.exit；否則刪除 stale lock。此邏輯 Windows/macOS 共用。
   atexit + SIGTERM/SIGINT handler 確保 lock 在正常/異常結束時都會清除。

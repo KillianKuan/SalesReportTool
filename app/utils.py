@@ -112,7 +112,7 @@ def override_key_id(key: tuple) -> str:
     Field values may contain arbitrary characters, so a delimiter-joined
     string isn't safe on its own - hash it instead."""
     raw = "\x1f".join(key)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.blake2s(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 
 RESET_OVERRIDE_CHOICE = "Others (keep)"
@@ -175,7 +175,7 @@ def _backup_corrupt(path) -> None:
         _logger.warning("Could not back up corrupt file %s", path, exc_info=True)
 
 
-def save_overrides(ov):
+def save_overrides(ov: dict) -> None:
     """Keys must already be normalized via override_key(). Raises on failure
     (e.g. a non-serializable value) so bugs surface during development instead
     of silently writing non-standard NaN into the file."""
@@ -183,7 +183,9 @@ def save_overrides(ov):
                        allow_nan=False)
 
 
-def load_overrides():
+def load_overrides() -> dict:
+    """Load saved category overrides as {normalized key tuple: category}.
+    Unreadable files are backed up to *.bak and treated as empty."""
     try:
         if not os.path.exists(OVERRIDES_FILE):
             return {}
@@ -515,7 +517,8 @@ def _load_aliases(kind):
         with open(APP_DIR / "aliases.json", encoding="utf-8") as f:
             data = json.load(f)
         return data.get(kind, {})
-    except Exception:
+    except (OSError, ValueError, AttributeError):
+        _logger.warning("Could not read aliases.json (%s section); using none", kind, exc_info=True)
         return {}
 
 
@@ -1041,9 +1044,9 @@ def pr_section_heading(text: str, icon: str | None = None) -> None:
         with _icon_col:
             st.markdown(f":material/{icon}:")
         with _text_col:
-            st.markdown(f'<div class="sr-pr-heading">{text}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sr-pr-heading">{html.escape(str(text))}</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="sr-pr-heading">{text}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sr-pr-heading">{html.escape(str(text))}</div>', unsafe_allow_html=True)
 
 
 def render_report_table(df_display: pd.DataFrame) -> None:

@@ -51,9 +51,6 @@ METRIC_GROUPS = ["QTY", "AMT", "GP"]
 SUB_COLUMNS = ["Budget", "Forecast", "PO", "Shipped", "Deviation"]
 MONTH_INDEX = {m: i + 1 for i, m in enumerate(MONTHS)}
 
-# Module-level cache so aliases.json is only read once per process.
-_ALIASES_CACHE: Optional[dict] = None
-_FCST_CANONICAL_CACHE: Optional[dict] = None
 _unmatched_customers: set[tuple[str, str]] = set()
 _unmatched_amounts: dict[tuple[str, str], float] = {}
 _ignored_row_count: int = 0
@@ -63,29 +60,13 @@ logger = logging.getLogger(__name__)
 
 
 def _load_fcst_customer_aliases() -> dict:
-    """Return the 'customer' section of app/aliases.json (cached)."""
-    global _ALIASES_CACHE
-    if _ALIASES_CACHE is None:
-        try:
-            path = Path(__file__).resolve().parent / "aliases.json"
-            with open(path, encoding="utf-8") as f:
-                _ALIASES_CACHE = json.load(f).get("customer", {})
-        except Exception:
-            _ALIASES_CACHE = {}
-    return _ALIASES_CACHE
+    """The 'customer' section of app/aliases.json (read once per process by utils)."""
+    return utils.get_shipped_aliases("customer")
 
 
 def _load_fcst_canonical_mapping() -> dict:
-    """Return the 'fcst_customer' section of app/aliases.json (cached)."""
-    global _FCST_CANONICAL_CACHE
-    if _FCST_CANONICAL_CACHE is None:
-        try:
-            path = Path(__file__).resolve().parent / "aliases.json"
-            with open(path, encoding="utf-8") as f:
-                _FCST_CANONICAL_CACHE = json.load(f).get("fcst_customer", {})
-        except Exception:
-            _FCST_CANONICAL_CACHE = {}
-    return _FCST_CANONICAL_CACHE
+    """The 'fcst_customer' section of app/aliases.json (read once per process by utils)."""
+    return utils.get_shipped_aliases("fcst_customer")
 
 
 def _normalize_fcst_name(name: str) -> str:
@@ -161,7 +142,7 @@ def get_unmatched_customer_amounts() -> dict:
     return dict(_unmatched_amounts)
 
 
-def clear_unmatched_customers():
+def clear_unmatched_customers() -> None:
     """Clear the unmatched customers set (call before each FCST load)."""
     global _unmatched_customers, _unmatched_amounts
     _unmatched_customers.clear()
@@ -174,7 +155,8 @@ def get_ignored_row_count() -> int:
     return _ignored_row_count
 
 
-def clear_ignored_row_count():
+def clear_ignored_row_count() -> None:
+    """Reset the ignored-row counter (call before each FCST parse)."""
     global _ignored_row_count
     _ignored_row_count = 0
 

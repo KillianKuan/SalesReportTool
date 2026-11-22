@@ -8,6 +8,8 @@ in utils.py for the CSS classes these helpers render into.
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 from palette import NEGATIVE, NEGATIVE_BG, POSITIVE, POSITIVE_BG, MUTED_BG
@@ -26,12 +28,19 @@ def card_title(text: str, icon: str | None = None) -> None:
         with _icon_col:
             st.markdown(f":material/{icon}:")
         with _text_col:
-            st.markdown(f'<div class="sr-card-title">{text}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sr-card-title">{html.escape(str(text))}</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="sr-card-title">{text}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sr-card-title">{html.escape(str(text))}</div>', unsafe_allow_html=True)
 
 
-def kpi_card(label, value, delta=None, delta_positive=None, caption=None, icon=None) -> None:
+def kpi_card(
+    label: str,
+    value: object,
+    delta: object = None,
+    delta_positive: bool | None = None,
+    caption: str | None = None,
+    icon: str | None = None,
+) -> None:
     """Custom KPI tile replacing ``st.metric``.
 
     Uppercase muted label, 28px/600 value, an optional delta pill
@@ -49,12 +58,12 @@ def kpi_card(label, value, delta=None, delta_positive=None, caption=None, icon=N
             pill_cls = "sr-kpi-delta-neg" if str(delta).strip().startswith("-") else "sr-kpi-delta-pos"
         else:
             pill_cls = "sr-kpi-delta-pos" if delta_positive else "sr-kpi-delta-neg"
-        delta_html = f'<span class="sr-kpi-delta {pill_cls}">{delta}</span>'
-    caption_html = f'<div class="sr-kpi-caption">{caption}</div>' if caption else ""
+        delta_html = f'<span class="sr-kpi-delta {pill_cls}">{html.escape(str(delta))}</span>'
+    caption_html = f'<div class="sr-kpi-caption">{html.escape(str(caption))}</div>' if caption else ""
     st.markdown(
         f"""<div class="sr-kpi-card">
-    <div class="sr-kpi-label">{label}</div>
-    <div class="sr-kpi-value">{value}{delta_html}</div>
+    <div class="sr-kpi-label">{html.escape(str(label))}</div>
+    <div class="sr-kpi-value">{html.escape(str(value))}{delta_html}</div>
     {caption_html}
 </div>""",
         unsafe_allow_html=True,

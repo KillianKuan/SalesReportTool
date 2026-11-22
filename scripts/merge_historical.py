@@ -31,6 +31,14 @@ def _get_all_xlsx(year_dir: Path) -> list[Path]:
     return sorted(year_dir.glob("*.xlsx"), key=lambda p: p.name)
 
 
+def _report_skipped(skipped: list) -> None:
+    """Print a closing summary so skipped files aren't lost in the scrollback."""
+    if skipped:
+        print(f"\nWARNING: {len(skipped)} file(s) were SKIPPED and are NOT in the output:")
+        for item in skipped:
+            print(f"  - {item}")
+
+
 def main() -> None:
     if not DATA_DIR.exists():
         print(f"Data directory not found: {DATA_DIR}")
@@ -51,11 +59,13 @@ def main() -> None:
         sys.exit(0)
 
     frames = []
+    skipped: list = []
     seen_optional = set()
     for d in year_dirs:
         xlsx_files = _get_all_xlsx(d)
         if not xlsx_files:
             print(f"  SKIP {d.name}/: no .xlsx file found")
+            skipped.append(f"{d.name}/ (no .xlsx file)")
             continue
 
         for xlsx in xlsx_files:
@@ -64,16 +74,19 @@ def main() -> None:
                     xl = pd.ExcelFile(xlsx, engine="calamine")
                 except ImportError:
                     xl = pd.ExcelFile(xlsx)
-            except Exception as e:
+            except Exception as e:  # unreadable/corrupt workbook: report and keep going
                 print(f"  SKIP {d.name}/{xlsx.name}: cannot open ({e})")
+                skipped.append(f"{d.name}/{xlsx.name} (cannot open)")
                 continue
             if "Actual" not in xl.sheet_names:
                 print(f"  SKIP {d.name}/{xlsx.name}: 'Actual' sheet not found (got {xl.sheet_names})")
+                skipped.append(f"{d.name}/{xlsx.name} ('Actual' sheet missing)")
                 continue
             raw = xl.parse("Actual")
             missing = [c for c in REQUIRED_COLS if c not in raw.columns]
             if missing:
                 print(f"  SKIP {d.name}/{xlsx.name}: missing required columns {missing}")
+                skipped.append(f"{d.name}/{xlsx.name} (missing columns {missing})")
                 continue
             use_cols = REQUIRED_COLS + [c for c in OPTIONAL_COLS if c in raw.columns]
             frame = raw[use_cols].copy()
@@ -83,7 +96,8 @@ def main() -> None:
 
     if not frames:
         print("No data to merge — output file not written.")
-        sys.exit(0)
+        _report_skipped(skipped)
+        sys.exit(1 if skipped else 0)
 
     merged = pd.concat(frames, ignore_index=True)
     output_cols = REQUIRED_COLS + [col for col in OPTIONAL_COLS if col in seen_optional]
@@ -106,6 +120,10 @@ def main() -> None:
         print(f"Wrote {len(merged):,} rows → {parquet_path}")
     except Exception as e:  # pragma: no cover - depends on optional parquet engine
         print(f"  WARN: could not write Parquet ({e}); CSV is still available.")
+
+    _report_skipped(skipped)
+    if skipped:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
