@@ -25,6 +25,8 @@ pip install -r requirements.txt
 chmod +x run.sh build-mac.sh   # first time only
 ./run.sh                       # dev server (streamlit run app/app.py)
 ```
+macOS: double-click `run.command` in Finder to activate `venv-mac`, start the
+dev server in Terminal and open the browser (first time: `chmod +x run.command`).
 
 **Developers (Windows):**
 ```powershell
