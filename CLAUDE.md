@@ -228,7 +228,13 @@ Sidebar 的 `Chatbot` 頁面（`app.py` 的 `if _nav_page == "Chatbot":`），�
   FCST 以 lazy callable 傳入 executor，只有模型呼叫 `get_forecast` 時才載入。
 - Settings：`DEFAULT_SETTINGS` 新增 `chat_model`、`chat_api_key`（明文存於 `settings.json`；UI 在
   ⚙️ Settings ▸ Chatbot，password 輸入框）。「Reset ALL」會一併清除 key。
-- 隱私：只送出彙總結果（不含原始列）至 Anthropic API。
+- Provider：`chat_provider` = `anthropic`（預設）或 `gemini`（Google AI Studio，免費層免信用卡）。
+  `chatbot.provider_config(settings)` 回傳 `(provider, key, model)`；`ask(..., provider=)` 分派到
+  `_ask_anthropic`（SDK）或 `_ask_gemini`（`urllib` 直呼 REST，**無新增依賴、不需改打包參數**）。
+  Gemini 設定鍵：`chat_gemini_api_key`、`chat_gemini_model`；env `GEMINI_API_KEY`/`GOOGLE_API_KEY`
+  優先於 settings。Gemini 回應的 model turn 必須原樣回傳（保留 thought signature）。測試以
+  `ask(client=<fake post callable>)` 注入。免費層資料可能被 Google 用於改進產品——UI 已提示。
+- 隱私：只送出彙總結果（不含原始列）至所選 provider 的 API。
 - 打包：`anthropic` 為 lazy import，PyInstaller 偵測不到，所以 `build.bat`、
   `build-windows.yml`、`build-mac.sh` 都要有 `--hidden-import anthropic --collect-all anthropic`。
 - 新增 tool 時：在 `chat_tools.py` 加函式 + `TOOL_SCHEMAS` + `make_executor` 分派 + 單元測試。

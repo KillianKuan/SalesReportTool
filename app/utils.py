@@ -257,6 +257,11 @@ DEFAULT_SETTINGS = {
     # in settings.json; the ANTHROPIC_API_KEY env var takes precedence.
     "chat_model": "claude-haiku-5-5",
     "chat_api_key": "",
+    # Provider choice + Google AI Studio (Gemini) credentials (same plaintext
+    # caveat; GEMINI_API_KEY / GOOGLE_API_KEY env vars take precedence).
+    "chat_provider": "anthropic",
+    "chat_gemini_api_key": "",
+    "chat_gemini_model": "gemini-2.5-flash",
 }
 
 

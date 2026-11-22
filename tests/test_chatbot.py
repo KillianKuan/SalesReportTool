@@ -135,5 +135,116 @@ class KeyAndPromptTests(unittest.TestCase):
         self.assertIn("ALWAYS use the tools", p)
 
 
+def _gem_text(t):
+    return {"candidates": [{"content": {"role": "model", "parts": [{"text": t}]}}]}
+
+
+def _gem_call(name, args):
+    return {"candidates": [{"content": {"role": "model", "parts": [
+        {"functionCall": {"name": name, "args": args}, "thoughtSignature": "sig"}]}}]}
+
+
+class FakePost:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def __call__(self, url, headers, body):
+        # deep-ish copy: the loop mutates `contents` after the call
+        import copy
+        self.calls.append((url, headers, copy.deepcopy(body)))
+        return self._responses.pop(0)
+
+
+class GeminiAskTests(unittest.TestCase):
+    def ask(self, post, **kw):
+        return chatbot.ask("q", kw.pop("history", []), kw.pop("executor", lambda n, a: {}),
+                           "gkey", client=post, provider="gemini", **kw)
+
+    def test_plain_answer_and_request_shape(self):
+        post = FakePost([_gem_text("Hi")])
+        text, trace = self.ask(post, model="gemini-2.5-flash")
+        self.assertEqual((text, trace), ("Hi", []))
+        url, headers, body = post.calls[0]
+        self.assertIn("gemini-2.5-flash:generateContent", url)
+        self.assertEqual(headers["x-goog-api-key"], "gkey")
+        names = [d["name"] for d in body["tools"][0]["functionDeclarations"]]
+        self.assertEqual(names, ["query_sales", "get_kpis", "get_forecast"])
+        self.assertIn("systemInstruction", body)
+
+    def test_function_call_round_trip(self):
+        post = FakePost([_gem_call("get_kpis", {"year": 2025}), _gem_text("Revenue 100")])
+        seen = []
+
+        def executor(name, args):
+            seen.append((name, args))
+            return {"revenue": 100}
+
+        text, trace = self.ask(post, executor=executor)
+        self.assertEqual(text, "Revenue 100")
+        self.assertEqual(seen, [("get_kpis", {"year": 2025})])
+        self.assertEqual(trace[0]["output"], {"revenue": 100})
+        second = post.calls[1][2]["contents"]
+        # model turn echoed unchanged (thought signature kept), then our response
+        self.assertEqual(second[-2]["role"], "model")
+        self.assertEqual(second[-2]["parts"][0]["thoughtSignature"], "sig")
+        fr = second[-1]["parts"][0]["functionResponse"]
+        self.assertEqual(fr["name"], "get_kpis")
+        self.assertEqual(fr["response"]["result"], {"revenue": 100})
+
+    def test_history_roles_mapped_to_user_and_model(self):
+        post = FakePost([_gem_text("ok")])
+        hist = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+        self.ask(post, history=hist)
+        roles = [c["role"] for c in post.calls[0][2]["contents"]]
+        self.assertEqual(roles, ["user", "model", "user"])
+
+    def test_missing_key(self):
+        with self.assertRaises(chatbot.ChatError) as cm:
+            chatbot.ask("q", [], lambda n, a: {}, "", provider="gemini")
+        self.assertIn("Gemini", str(cm.exception))
+
+    def test_no_candidates_is_friendly_error(self):
+        post = FakePost([{"promptFeedback": {"blockReason": "SAFETY"}}])
+        with self.assertRaises(chatbot.ChatError) as cm:
+            self.ask(post)
+        self.assertIn("SAFETY", str(cm.exception))
+
+    def test_loop_is_capped(self):
+        post = FakePost([_gem_call("get_kpis", {"year": 1})
+                         for _ in range(chatbot.MAX_TOOL_ROUNDS + 2)])
+        with self.assertRaises(chatbot.ChatError):
+            self.ask(post)
+
+    def test_http_error_messages(self):
+        f = chatbot._gemini_error_message
+        self.assertIn("rate limit", f(429, "{}").lower())
+        self.assertIn("API key", f(400, '{"error": {"message": "API key not valid."}}'))
+        self.assertIn("not found", f(404, "{}"))
+
+
+class ProviderConfigTests(unittest.TestCase):
+    def test_defaults_to_anthropic(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            p, k, m = chatbot.provider_config({"chat_api_key": "a"})
+        self.assertEqual((p, k, m), ("anthropic", "a", chatbot.DEFAULT_MODEL))
+
+    def test_gemini_selected_uses_gemini_fields(self):
+        s = {"chat_provider": "gemini", "chat_api_key": "a",
+             "chat_gemini_api_key": "g", "chat_gemini_model": "gemini-2.5-pro"}
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(chatbot.provider_config(s), ("gemini", "g", "gemini-2.5-pro"))
+
+    def test_gemini_env_vars(self):
+        with mock.patch.dict(os.environ, {"GOOGLE_API_KEY": "envg"}, clear=True):
+            self.assertEqual(chatbot.resolve_api_key({}, "gemini"), "envg")
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "e1", "GOOGLE_API_KEY": "e2"}, clear=True):
+            self.assertEqual(chatbot.resolve_api_key({}, "gemini"), "e1")
+
+    def test_unknown_provider_falls_back(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(chatbot.provider_config({"chat_provider": "x"})[0], "anthropic")
+
+
 if __name__ == "__main__":
     unittest.main()

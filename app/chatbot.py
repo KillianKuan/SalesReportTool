@@ -23,6 +23,16 @@ MAX_HISTORY_MESSAGES = 10
 MAX_TOKENS = 1024
 API_KEY_ENV = "ANTHROPIC_API_KEY"
 
+# Google AI Studio (Gemini API): free tier needs no credit card. Called over
+# plain REST with urllib, so no extra dependency / packaging flags.
+PROVIDERS = {"anthropic": "Anthropic (Claude)", "gemini": "Google AI Studio (Gemini)"}
+DEFAULT_PROVIDER = "anthropic"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
+GEMINI_API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_TIMEOUT = 60
+
 EXAMPLE_QUESTIONS = [
     "What was total revenue and GP% in 2025, and how does it compare to 2024?",
     "Who are the top 5 customers by revenue this year?",
@@ -31,12 +41,32 @@ EXAMPLE_QUESTIONS = [
 ]
 
 
-def resolve_api_key(settings: Optional[dict] = None) -> str:
+def resolve_api_key(settings: Optional[dict] = None, provider: str = DEFAULT_PROVIDER) -> str:
     """Environment variable wins; fall back to the key saved in settings.json."""
-    key = os.environ.get(API_KEY_ENV, "").strip()
+    if provider == "gemini":
+        key = next(
+            (v for v in (os.environ.get(e, "").strip() for e in GEMINI_API_KEY_ENVS) if v), ""
+        )
+        field = "chat_gemini_api_key"
+    else:
+        key = os.environ.get(API_KEY_ENV, "").strip()
+        field = "chat_api_key"
     if not key and settings:
-        key = str(settings.get("chat_api_key") or "").strip()
+        key = str(settings.get(field) or "").strip()
     return key
+
+
+def provider_config(settings: Optional[dict] = None) -> tuple[str, str, str]:
+    """(provider, api_key, model) for the provider selected in settings."""
+    settings = settings or {}
+    provider = settings.get("chat_provider")
+    if provider not in PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    if provider == "gemini":
+        model = settings.get("chat_gemini_model") or DEFAULT_GEMINI_MODEL
+    else:
+        model = settings.get("chat_model") or DEFAULT_MODEL
+    return provider, resolve_api_key(settings, provider), model
 
 
 def build_system_prompt(today: Optional[datetime] = None) -> str:
@@ -97,15 +127,135 @@ def ask(
     history: list[dict],
     executor: Callable[[str, dict], dict],
     api_key: str,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     client: Any = None,
+    provider: str = DEFAULT_PROVIDER,
 ) -> tuple[str, list[dict]]:
-    """Answer *question*. Returns (answer_text, tool_trace).
+    """Answer *question* with the chosen provider. Returns (answer_text, tool_trace).
 
     *history* is prior plain-text turns [{"role": "user"|"assistant", "content": str}].
     *tool_trace* lists {"tool", "input", "output"} for each tool call, so the UI
     can show where the numbers came from. Raises ChatError on failure.
+    *client* is a test seam: an Anthropic-like client, or for Gemini a
+    callable (url, headers, body) -> dict.
     """
+    if provider == "gemini":
+        return _ask_gemini(question, history, executor, api_key,
+                           model or DEFAULT_GEMINI_MODEL, client)
+    return _ask_anthropic(question, history, executor, api_key,
+                          model or DEFAULT_MODEL, client)
+
+
+def _gemini_error_message(status: int, body: str) -> str:
+    detail = ""
+    try:
+        detail = json.loads(body).get("error", {}).get("message", "")
+    except (ValueError, AttributeError):
+        pass
+    if status in (400, 401, 403) and "api key" in (detail or "").lower():
+        return "The Gemini API key was rejected. Check it in Settings ▸ Chatbot."
+    if status in (401, 403):
+        return "The Gemini API key is not allowed to use this model or region."
+    if status == 404:
+        return "The selected Gemini model was not found. Pick another one in Settings ▸ Chatbot."
+    if status == 429:
+        return ("Gemini rate limit reached (the free tier has low per-minute and daily "
+                "limits). Wait a moment and try again.")
+    if status == 400:
+        return f"The request was rejected: {detail or 'bad request'}"
+    return f"Gemini returned an error (HTTP {status}). Please try again."
+
+
+def _gemini_post(url: str, headers: dict, body: dict) -> dict:
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ChatError(_gemini_error_message(exc.code, exc.read().decode("utf-8", "replace"))) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ChatError(
+            "Could not reach the Gemini API. Check your internet connection."
+        ) from exc
+
+
+def _ask_gemini(question, history, executor, api_key, model, post=None):
+    if not api_key and post is None:
+        raise ChatError(
+            "No Gemini API key configured. Add one in Settings ▸ Chatbot, or set the "
+            f"{GEMINI_API_KEY_ENVS[0]} environment variable."
+        )
+    post = post or _gemini_post
+    url = GEMINI_ENDPOINT.format(model=model)
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    tools = [{"functionDeclarations": [
+        {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}
+        for t in TOOL_SCHEMAS
+    ]}]
+
+    contents: list[dict] = [
+        {"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]}
+        for m in history[-MAX_HISTORY_MESSAGES:]
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+    while contents and contents[0]["role"] != "user":
+        contents.pop(0)
+    contents.append({"role": "user", "parts": [{"text": question}]})
+
+    trace: list[dict] = []
+    system = {"parts": [{"text": build_system_prompt()}]}
+    for _ in range(MAX_TOOL_ROUNDS + 1):
+        body = {
+            "systemInstruction": system,
+            "contents": contents,
+            "tools": tools,
+            "generationConfig": {"maxOutputTokens": MAX_TOKENS * 2},
+        }
+        try:
+            data = post(url, headers, body)
+        except ChatError:
+            raise
+        except Exception as exc:
+            _logger.warning("Gemini request failed", exc_info=True)
+            raise ChatError("The assistant ran into an error. Please try again.") from exc
+
+        cands = data.get("candidates") or []
+        if not cands:
+            block = (data.get("promptFeedback") or {}).get("blockReason")
+            raise ChatError(
+                f"Gemini returned no answer{f' (blocked: {block})' if block else ''}. "
+                "Try rephrasing the question."
+            )
+        content = cands[0].get("content") or {}
+        parts = content.get("parts") or []
+        calls = [p["functionCall"] for p in parts if "functionCall" in p]
+        if not calls:
+            text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            return (text or "(No answer returned.)"), trace
+
+        # Echo the model turn back unchanged (keeps any thought signatures).
+        contents.append({"role": "model", "parts": parts})
+        responses = []
+        for call in calls:
+            args = dict(call.get("args") or {})
+            output = executor(call["name"], args)
+            trace.append({"tool": call["name"], "input": args, "output": output})
+            responses.append({"functionResponse": {
+                "name": call["name"], "response": {"result": output},
+            }})
+        contents.append({"role": "user", "parts": responses})
+
+    raise ChatError(
+        "That question needed too many lookups. Try asking something simpler or more specific."
+    )
+
+
+def _ask_anthropic(question, history, executor, api_key, model, client):
     if not api_key and client is None:
         raise ChatError(
             "No API key configured. Add one in Settings ▸ Chatbot, or set the "

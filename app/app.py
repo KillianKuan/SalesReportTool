@@ -1404,20 +1404,33 @@ if _nav_page == "Company Dashboard":
 if _nav_page == "Chatbot":
     st.header(":material/chat: Data Chatbot")
     _cb_settings = st.session_state.get("app_settings") or load_settings()
-    _cb_key = chatbot.resolve_api_key(_cb_settings)
-    _cb_model = _cb_settings.get("chat_model") or chatbot.DEFAULT_MODEL
+    _cb_provider, _cb_key, _cb_model = chatbot.provider_config(_cb_settings)
+    _cb_provider_name = chatbot.PROVIDERS[_cb_provider]
     st.caption(
         "Ask simple questions about the loaded sales data. Numbers come from the "
         "app's own calculations (not the model's memory); only aggregated results "
-        "- never raw rows - are sent to the Anthropic API. Respects the Sales Person "
-        "filter and Ignore List."
+        f"- never raw rows - are sent to **{_cb_provider_name}**. Respects the Sales "
+        "Person filter and Ignore List."
     )
 
     if not _cb_key:
-        st.info(
-            "No API key configured. Add one in **Settings ▸ Chatbot** "
-            f"(or set the `{chatbot.API_KEY_ENV}` environment variable)."
-        )
+        if _cb_provider == "gemini":
+            st.info(
+                "No Gemini API key configured. Add one in **Settings ▸ Chatbot** "
+                f"(or set the `{chatbot.GEMINI_API_KEY_ENVS[0]}` environment variable). "
+                "Free keys (no credit card) come from "
+                "[Google AI Studio](https://aistudio.google.com/apikey) — see the steps "
+                "in Settings ▸ Chatbot."
+            )
+        else:
+            st.info(
+                "No API key configured. Add one in **Settings ▸ Chatbot** "
+                f"(or set the `{chatbot.API_KEY_ENV}` environment variable). "
+                "Don't have one? Get it at "
+                "[console.anthropic.com](https://console.anthropic.com/settings/keys) "
+                "— see the steps in Settings ▸ Chatbot. Prefer a free option? Switch "
+                "the provider to Google AI Studio (Gemini) there."
+            )
 
     _cb_df = (
         all_df[all_df["Customer Name"].isin(_sp_visible_custs)]
@@ -1480,6 +1493,7 @@ if _nav_page == "Chatbot":
                         _cb_prompt,
                         [{"role": m["role"], "content": m["content"]} for m in _cb_msgs],
                         _cb_executor, _cb_key, model=_cb_model,
+                        provider=_cb_provider,
                     )
             except chatbot.ChatError as _cb_err:
                 st.error(str(_cb_err))
@@ -1779,39 +1793,105 @@ if _nav_page == "Settings":
     if _set_section == ":material/chat: Chatbot":
         with st.container(border=True):
             card_title("Chatbot", icon="chat")
+            _prov_ids = list(chatbot.PROVIDERS)
+            _set_cur_prov = _set_settings.get("chat_provider")
+            if _set_cur_prov not in _prov_ids:
+                _set_cur_prov = chatbot.DEFAULT_PROVIDER
+            _set_prov = st.radio(
+                "Provider", _prov_ids, index=_prov_ids.index(_set_cur_prov),
+                format_func=lambda p: chatbot.PROVIDERS[p],
+                horizontal=True, key="settings_chat_provider",
+                help="Gemini's free tier needs no credit card; Claude is billed per use.",
+            )
+            _set_is_gem = _set_prov == "gemini"
             st.caption(
                 "The Chatbot page sends **aggregated results** (never raw rows) to the "
-                "Anthropic API. The key below is saved in plaintext in `app/settings.json`; "
-                f"alternatively set the `{chatbot.API_KEY_ENV}` environment variable "
-                "(it takes precedence)."
+                "selected provider. Keys are saved in plaintext in `app/settings.json`; "
+                "alternatively set the environment variable (it takes precedence)."
             )
-            if os.environ.get(chatbot.API_KEY_ENV, "").strip():
-                st.success(f"`{chatbot.API_KEY_ENV}` is set and will be used.")
+
+            if _set_is_gem:
+                with st.expander("How do I get a free Gemini API key?", icon=":material/help:"):
+                    st.markdown(
+                        "1. Open [Google AI Studio](https://aistudio.google.com/apikey) and "
+                        "sign in with a Google account.\n"
+                        "2. Click **Create API key** (create or pick a project when asked). "
+                        "The free tier needs **no credit card**.\n"
+                        "3. Copy the key, paste it below and click **Save Chatbot Settings**.\n\n"
+                        "Good to know: the free tier has low per-minute and daily request "
+                        "limits (a *rate limit reached* message just means wait a moment), "
+                        "and Flash models offer a very large context window (up to 1M tokens). "
+                        "**Privacy:** on Google's free tier, prompts and responses may be used "
+                        "to improve Google's products. This app only sends aggregated "
+                        "figures, but if that is a concern for your company data, use a "
+                        "paid (billing-enabled) key or the Claude option instead."
+                    )
+                _set_env_names = chatbot.GEMINI_API_KEY_ENVS
+            else:
+                with st.expander("How do I get an Anthropic API key?", icon=":material/help:"):
+                    st.markdown(
+                        "1. Sign in (or sign up) at "
+                        "[console.anthropic.com](https://console.anthropic.com).\n"
+                        "2. Add credits under **Billing** — API usage is billed separately "
+                        "from a Claude.ai chat subscription, and the key won't work "
+                        "without credits. Simple questions on Haiku typically cost a "
+                        "fraction of a cent each.\n"
+                        "3. Open [API keys](https://console.anthropic.com/settings/keys), "
+                        "click **Create Key**, name it (e.g. *Sales Report Tool*) and copy it "
+                        "— it is shown only once.\n"
+                        "4. Paste it below and click **Save Chatbot Settings**.\n\n"
+                        "Tips: keep the key private (anyone with it can spend your credits), "
+                        "set a monthly spend limit in the console, and create a separate key "
+                        "per person so one can be revoked without affecting others."
+                    )
+                _set_env_names = (chatbot.API_KEY_ENV,)
+            _set_env_hit = next(
+                (e for e in _set_env_names if os.environ.get(e, "").strip()), None
+            )
+            if _set_env_hit:
+                st.success(f"`{_set_env_hit}` is set and will be used.")
+
+            if _set_is_gem:
+                _set_key_field, _set_model_field = "chat_gemini_api_key", "chat_gemini_model"
+                _set_model_opts = list(chatbot.GEMINI_MODELS)
+                _set_model_default = chatbot.DEFAULT_GEMINI_MODEL
+                _set_key_label = "Gemini API key"
+                _set_model_help = ("Flash is fast and free-tier friendly; Pro handles harder "
+                                   "questions but may have tighter or no free quota.")
+            else:
+                _set_key_field, _set_model_field = "chat_api_key", "chat_model"
+                _set_model_opts = list(chatbot.CHAT_MODELS)
+                _set_model_default = chatbot.DEFAULT_MODEL
+                _set_key_label = "Anthropic API key"
+                _set_model_help = "Haiku is fastest and cheapest; Sonnet handles harder questions."
+
             _set_chat_key = st.text_input(
-                "Anthropic API key",
-                value=_set_settings.get("chat_api_key", ""),
+                _set_key_label,
+                value=_set_settings.get(_set_key_field, ""),
                 type="password",
-                key="settings_chat_key",
+                key=f"settings_chat_key_{_set_prov}",
             )
-            _set_models = list(chatbot.CHAT_MODELS)
-            _set_cur_model = _set_settings.get("chat_model") or chatbot.DEFAULT_MODEL
-            if _set_cur_model not in _set_models:
-                _set_models.append(_set_cur_model)
+            _set_cur_model = _set_settings.get(_set_model_field) or _set_model_default
+            if _set_cur_model not in _set_model_opts:
+                _set_model_opts.append(_set_cur_model)
             _set_chat_model = st.selectbox(
-                "Model", _set_models, index=_set_models.index(_set_cur_model),
-                key="settings_chat_model",
-                help="Haiku is fastest and cheapest; Sonnet handles harder questions.",
+                "Model", _set_model_opts, index=_set_model_opts.index(_set_cur_model),
+                key=f"settings_chat_model_{_set_prov}", help=_set_model_help,
             )
             _cc1, _cc2 = st.columns(2)
             if _cc1.button("Save Chatbot Settings", icon=":material/save:", key="settings_chat_save"):
-                _set_settings["chat_api_key"] = _set_chat_key.strip()
-                _set_settings["chat_model"] = _set_chat_model
+                _set_settings["chat_provider"] = _set_prov
+                _set_settings[_set_key_field] = _set_chat_key.strip()
+                _set_settings[_set_model_field] = _set_chat_model
                 _set_persist(_set_settings)
             if _cc2.button("Reset Chatbot Settings", icon=":material/restart_alt:", key="settings_reset_chat"):
-                _set_settings["chat_api_key"] = DEFAULT_SETTINGS["chat_api_key"]
-                _set_settings["chat_model"] = DEFAULT_SETTINGS["chat_model"]
-                st.session_state.pop("settings_chat_key", None)
-                st.session_state.pop("settings_chat_model", None)
+                for _f in ("chat_provider", "chat_api_key", "chat_model",
+                           "chat_gemini_api_key", "chat_gemini_model"):
+                    _set_settings[_f] = DEFAULT_SETTINGS[_f]
+                for _k in ("settings_chat_provider", "settings_chat_key_anthropic",
+                           "settings_chat_key_gemini", "settings_chat_model_anthropic",
+                           "settings_chat_model_gemini"):
+                    st.session_state.pop(_k, None)
                 _set_persist(_set_settings)
 
     if st.button("Reset ALL Settings to Default", icon=":material/restart_alt:", key="settings_reset_all", type="primary"):

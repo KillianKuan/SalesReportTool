@@ -298,6 +298,19 @@ expander under each answer shows the lookups and tables behind it.
 - **Setup:** add an Anthropic API key in **Settings ▸ Chatbot** (saved in plaintext in
   `app/settings.json`) or set the `ANTHROPIC_API_KEY` environment variable (takes precedence).
   The model defaults to Haiku; Sonnet is selectable for harder questions.
+- **Providers:** choose in Settings ▸ Chatbot between **Anthropic (Claude)** and **Google AI Studio
+  (Gemini)**. Gemini's free tier needs no credit card (get a key at
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey)); it has low per-minute/daily
+  limits, and on the free tier Google may use prompts and responses to improve its products — use
+  a billing-enabled key or Claude if that is a concern. Env vars: `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` (Gemini), `ANTHROPIC_API_KEY` (Claude). Gemini is called over plain HTTPS
+  (no extra dependency).
+- **Getting an Anthropic API key:** sign in at [console.anthropic.com](https://console.anthropic.com),
+  add credits under Billing (API usage is billed separately from a Claude.ai subscription),
+  then create a key at [Settings ▸ API keys](https://console.anthropic.com/settings/keys) and
+  copy it — it is shown only once. Keep it private, set a monthly spend limit in the console,
+  and give each user their own key so one can be revoked independently. The same steps are
+  shown in the app under Settings ▸ Chatbot.
 - Q&A only — the chatbot cannot change filters, settings or data.
 
 ### Settings
@@ -354,9 +367,12 @@ light/dark theme is configured in Streamlit itself.
   read-only tools (`query_sales`, `get_kpis`, `get_forecast`) that reuse the app's own
   calculations, so numbers match the dashboard; only aggregated results are sent to the API.
   Each answer has a "Data used" expander showing the lookups behind it.
-- **Settings ▸ Chatbot**: API key + model selection, stored in `settings.json`
-  (`chat_api_key`, `chat_model`); `ANTHROPIC_API_KEY` env var takes precedence. "Reset ALL
-  Settings" also clears the saved key.
+- **Settings ▸ Chatbot**: provider (Claude or Google AI Studio / Gemini), API key and model,
+  stored in `settings.json` (`chat_provider`, `chat_api_key`, `chat_model`,
+  `chat_gemini_api_key`, `chat_gemini_model`); env vars take precedence. "Reset ALL Settings"
+  also clears saved keys.
+- **Gemini option**: free tier, no credit card. Uses the Gemini REST API via stdlib `urllib`
+  (no new dependency or build flags).
 - New dependency `anthropic` (added to `requirements.txt`, `build.bat`, `build-windows.yml`,
   `build-mac.sh` via `--collect-all anthropic`).
 - Tests: `tests/test_chat_tools.py`, `tests/test_chatbot.py` (fake client, no network).
