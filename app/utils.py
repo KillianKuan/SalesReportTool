@@ -6,8 +6,10 @@ import functools
 import hashlib
 import html
 import json
+import logging
 import os
 import re
+import shutil
 import string
 from pathlib import Path
 
@@ -145,13 +147,40 @@ def reset_override(overrides: dict, key: tuple) -> bool:
     return set_override(overrides, key, RESET_OVERRIDE_CHOICE)
 
 
+_logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(path, payload, **dump_kwargs) -> None:
+    """Write JSON to a temp file in the same directory, then os.replace() it
+    over *path*, so a crash mid-write never leaves a truncated file."""
+    path = str(path)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, **dump_kwargs)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _backup_corrupt(path) -> None:
+    """Keep a copy of an unreadable user-state file before defaults replace it."""
+    try:
+        shutil.copy2(path, f"{path}.bak")
+    except OSError:
+        _logger.warning("Could not back up corrupt file %s", path, exc_info=True)
+
+
 def save_overrides(ov):
     """Keys must already be normalized via override_key(). Raises on failure
     (e.g. a non-serializable value) so bugs surface during development instead
     of silently writing non-standard NaN into the file."""
-    with open(OVERRIDES_FILE, "w", encoding="utf-8") as f:
-        json.dump([[list(k), v] for k, v in ov.items()], f,
-                  ensure_ascii=False, indent=2, allow_nan=False)
+    _atomic_write_json(OVERRIDES_FILE, [[list(k), v] for k, v in ov.items()],
+                       allow_nan=False)
 
 
 def load_overrides():
@@ -168,14 +197,16 @@ def load_overrides():
             if new_key != key:
                 changed = True
             migrated[new_key] = row[1]
-    except Exception:
+    except (OSError, ValueError, TypeError, IndexError):
+        _logger.warning("Could not read %s; ignoring it", OVERRIDES_FILE, exc_info=True)
+        _backup_corrupt(OVERRIDES_FILE)
         return {}
 
     if changed:
         try:
             save_overrides(migrated)
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError):
+            _logger.warning("Could not save migrated overrides", exc_info=True)
     return migrated
 
 
@@ -210,20 +241,22 @@ def load_settings() -> dict:
                     val = data.get(key)
                     if val is not None and isinstance(val, type(default_val)):
                         settings[key] = val
-    except Exception:
-        pass
+    except (OSError, ValueError):
+        _logger.warning("Could not read %s; using defaults", SETTINGS_FILE, exc_info=True)
+        _backup_corrupt(SETTINGS_FILE)
     return settings
 
 
 def save_settings(settings: dict) -> None:
-    """Persist *settings* to app/settings.json (merged onto the current file)."""
+    """Persist *settings* to app/settings.json (merged onto the current file).
+    Raises OSError/ValueError/TypeError if the write fails."""
+    merged = load_settings()
+    merged.update({k: v for k, v in settings.items() if k in DEFAULT_SETTINGS})
     try:
-        merged = load_settings()
-        merged.update({k: v for k, v in settings.items() if k in DEFAULT_SETTINGS})
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        _atomic_write_json(SETTINGS_FILE, merged)
+    except (OSError, TypeError, ValueError):
+        _logger.error("Failed to save %s", SETTINGS_FILE, exc_info=True)
+        raise
 
 
 def get_shipped_aliases(kind: str) -> dict:
@@ -916,52 +949,33 @@ def to_fcst_wide_summary(fcst_df, selected_customers, month_cols):
     }
 
     # Create the wide DataFrame with same columns as wide_summary
+    def _period_of(col):
+        try:
+            return pd.to_datetime(col).strftime("%b")
+        except (ValueError, TypeError):
+            return None
+
+    # Parse each month column once (not once per row x column).
+    col_period = {c: _period_of(c) for c in month_cols if c != "Total" and not c.endswith(" Total")}
+
     data = []
     for metric in ["FCST QTY", "FCST AMT(TWD)", "FCST GP(TWD)"]:
         row = {"Metric": metric}
         col_name = metric_to_col[metric]
+        by_period = dict(zip(agg["Period"], agg[col_name]))
+
+        def _sum_for(cols):
+            return sum(by_period[col_period[c]] for c in cols
+                       if col_period.get(c) in by_period)
+
         for col in month_cols:
             if col == "Total":
-                # Calculate total across all months
-                total = 0
-                for m_col in month_cols:
-                    if m_col != "Total" and not m_col.endswith(" Total"):
-                        try:
-                            dt = pd.to_datetime(m_col)
-                            period = dt.strftime("%b")
-                            if period in agg["Period"].values:
-                                val = agg.loc[agg["Period"] == period, col_name].values[0]
-                                total += val
-                        except:
-                            pass
-                row[col] = total
+                row[col] = _sum_for(col_period)
             elif col.endswith(" Total"):
-                # Year total
                 year = col.split()[0]
-                year_total = 0
-                for m_col in month_cols:
-                    if m_col.startswith(year + "-"):
-                        try:
-                            dt = pd.to_datetime(m_col)
-                            period = dt.strftime("%b")
-                            if period in agg["Period"].values:
-                                val = agg.loc[agg["Period"] == period, col_name].values[0]
-                                year_total += val
-                        except:
-                            pass
-                row[col] = year_total
+                row[col] = _sum_for(c for c in col_period if c.startswith(year + "-"))
             else:
-                # Month column
-                try:
-                    dt = pd.to_datetime(col)
-                    period = dt.strftime("%b")
-                    if period in agg["Period"].values:
-                        val = agg.loc[agg["Period"] == period, col_name].values[0]
-                    else:
-                        val = 0
-                except:
-                    val = 0
-                row[col] = val
+                row[col] = by_period.get(col_period.get(col), 0)
         data.append(row)
 
     return pd.DataFrame(data)

@@ -14,9 +14,11 @@ Sheets: "Div.1&2_All", "VT"
 """
 
 import json
+import logging
 import os
 import re
 import string
+import threading
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -55,6 +57,9 @@ _FCST_CANONICAL_CACHE: Optional[dict] = None
 _unmatched_customers: set[tuple[str, str]] = set()
 _unmatched_amounts: dict[tuple[str, str], float] = {}
 _ignored_row_count: int = 0
+_STATS_ATTR = "_fcst_parse_stats"
+_STATS_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _load_fcst_customer_aliases() -> dict:
@@ -207,12 +212,31 @@ def load_fcst(data_dir: str, sheet_name: Optional[str] = None, settings_key: str
             if not df.empty:
                 df["Sheet"] = sn
                 frames.append(df)
-        except Exception as e:
-            print(f"[fcst_loader] Warning: Failed to parse sheet '{sn}': {e}")
+        except Exception:
+            logger.warning("Failed to parse FCST sheet '%s'", sn, exc_info=True)
             continue
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    # Parse-time side-channel stats travel with the cached result (df.attrs is
+    # pickled by st.cache_data), so a cache hit can restore them instead of
+    # leaving the module globals stale or cleared by another load.
+    result.attrs[_STATS_ATTR] = {
+        "unmatched": set(_unmatched_customers),
+        "amounts": dict(_unmatched_amounts),
+        "ignored": _ignored_row_count,
+    }
+    return result
+
+
+def _publish_stats(df: pd.DataFrame) -> None:
+    """Re-publish the parse stats stored on a (possibly cached) load_fcst result."""
+    stats = df.attrs.get(_STATS_ATTR) or {"unmatched": set(), "amounts": {}, "ignored": 0}
+    global _ignored_row_count
+    with _STATS_LOCK:
+        _unmatched_customers.clear()
+        _unmatched_customers.update(stats["unmatched"])
+        _unmatched_amounts.clear()
+        _unmatched_amounts.update(stats["amounts"])
+        _ignored_row_count = stats["ignored"]
 
 
 def get_fcst_for_dashboard(
@@ -221,6 +245,7 @@ def get_fcst_for_dashboard(
     sheet_name: str = "Div.1&2_All",
 ) -> pd.DataFrame:
     df = load_fcst(data_dir, sheet_name=sheet_name, settings_key=utils._settings_hash())
+    _publish_stats(df)
     if df.empty:
         return df
     df = df[df["Period"].isin(MONTHS)].copy()

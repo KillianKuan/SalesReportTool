@@ -9,6 +9,8 @@ helpers) directly with tmp directories, without touching Application
 Support, ``sys.platform``, or PyInstaller-only state - so they run the same
 on Linux/CI as on a real Mac.
 """
+from __future__ import annotations
+
 import contextlib
 import json
 import shutil
@@ -45,7 +47,7 @@ def _write_bundle(root: Path, version: str = "v1", extra_files: dict | None = No
 
 class MirrorAppDirTestCase(unittest.TestCase):
     def setUp(self):
-        self._tmp = Path(self.enterContext(_temp_dir()))
+        self._tmp = Path(_enter_temp_dir(self))
         self.source_dir = self._tmp / "bundle" / "app"
         self.active_dir = self._tmp / "support" / "app"
         _write_bundle(self.source_dir, "v1")
@@ -233,7 +235,7 @@ class DevSourceRunTestCase(unittest.TestCase):
     still guarantees the user-state files exist."""
 
     def test_same_source_and_active_dir_is_noop_with_defaults(self):
-        tmp = Path(self.enterContext(_temp_dir()))
+        tmp = Path(_enter_temp_dir(self))
         app_dir = tmp / "app"
         _write_bundle(app_dir, "v1")
         (app_dir / "settings.json").unlink()
@@ -245,7 +247,7 @@ class DevSourceRunTestCase(unittest.TestCase):
         self.assertEqual((app_dir / "settings.json").read_text(), "{}")
 
     def test_no_source_dir_is_noop_with_defaults(self):
-        tmp = Path(self.enterContext(_temp_dir()))
+        tmp = Path(_enter_temp_dir(self))
         app_dir = tmp / "app"
         app_dir.mkdir()
 
@@ -254,6 +256,14 @@ class DevSourceRunTestCase(unittest.TestCase):
         self.assertEqual(result, app_dir)
         self.assertTrue((app_dir / "overrides.json").exists())
         self.assertTrue((app_dir / "settings.json").exists())
+
+
+def _enter_temp_dir(case):
+    """TestCase.enterContext() is 3.11+; this works on 3.9 too."""
+    cm = _temp_dir()
+    path = cm.__enter__()
+    case.addCleanup(cm.__exit__, None, None, None)
+    return path
 
 
 @contextlib.contextmanager
