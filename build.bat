@@ -41,6 +41,8 @@ python -m PyInstaller ^
     --hidden-import pystray ^
     --hidden-import PIL ^
     --collect-all pystray ^
+    --hidden-import anthropic ^
+    --collect-all anthropic ^
     launcher.py
 if errorlevel 1 (
     echo.

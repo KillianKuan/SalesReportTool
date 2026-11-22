@@ -13,6 +13,8 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fcst_loader
+import chatbot
+import chat_tools
 
 from utils import (
     DATA_DIR, CAT_ORDER, _rules_key, _normalize_name,
@@ -200,6 +202,7 @@ _NAV_PAGES = [
     ("Company Dashboard", "dashboard"),
     ("Performance Report", "insert_chart"),
     ("Shipping Record Search", "local_shipping"),
+    ("Chatbot", "chat"),
 ]
 if "nav_page" not in st.session_state:
     st.session_state["nav_page"] = "Company Dashboard"
@@ -1397,6 +1400,94 @@ if _nav_page == "Company Dashboard":
             else:
                 st.info("No data found for selected customer(s).")
 
+# -- PAGE: Chatbot ---------------------------------------------
+if _nav_page == "Chatbot":
+    st.header(":material/chat: Data Chatbot")
+    _cb_settings = st.session_state.get("app_settings") or load_settings()
+    _cb_key = chatbot.resolve_api_key(_cb_settings)
+    _cb_model = _cb_settings.get("chat_model") or chatbot.DEFAULT_MODEL
+    st.caption(
+        "Ask simple questions about the loaded sales data. Numbers come from the "
+        "app's own calculations (not the model's memory); only aggregated results "
+        "- never raw rows - are sent to the Anthropic API. Respects the Sales Person "
+        "filter and Ignore List."
+    )
+
+    if not _cb_key:
+        st.info(
+            "No API key configured. Add one in **Settings ▸ Chatbot** "
+            f"(or set the `{chatbot.API_KEY_ENV}` environment variable)."
+        )
+
+    _cb_df = (
+        all_df[all_df["Customer Name"].isin(_sp_visible_custs)]
+        if _sp_visible_custs else all_df
+    )
+
+    def _cb_load_fcst():
+        """FCST rows for the get_forecast tool (loaded only when asked for)."""
+        try:
+            _sheet = None if _fcst_sheet == "All Sheets" else _fcst_sheet
+            return fcst_loader.get_fcst_for_dashboard(
+                str(DATA_DIR), customer=None, sheet_name=_sheet
+            )
+        except Exception:
+            return pd.DataFrame()
+
+    _cb_now = datetime.now()
+    _cb_executor = chat_tools.make_executor(
+        _cb_df, _cb_load_fcst, _cb_now.year, _cb_now.month
+    )
+
+    if "chat_messages" not in st.session_state:
+        st.session_state["chat_messages"] = []
+    _cb_msgs = st.session_state["chat_messages"]
+
+    if _cb_msgs and st.button("Clear chat", icon=":material/delete_sweep:", key="chat_clear"):
+        st.session_state["chat_messages"] = []
+        st.rerun()
+
+    if not _cb_msgs:
+        st.markdown("**Try asking:**")
+        for _i, _q in enumerate(chatbot.EXAMPLE_QUESTIONS):
+            if st.button(_q, key=f"chat_example_{_i}", disabled=not _cb_key):
+                st.session_state["_chat_pending"] = _q
+                st.rerun()
+
+    for _m in _cb_msgs:
+        with st.chat_message(_m["role"]):
+            st.markdown(_m["content"])
+            if _m.get("trace"):
+                with st.expander(f"Data used ({len(_m['trace'])} lookup(s))"):
+                    for _t in _m["trace"]:
+                        st.caption(f"`{_t['tool']}` {_t['input']}")
+                        _rows = _t["output"].get("rows") if isinstance(_t["output"], dict) else None
+                        if _rows:
+                            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+                        else:
+                            st.json(_t["output"], expanded=False)
+
+    _cb_prompt = st.chat_input("Ask about revenue, customers, categories, forecast...", disabled=not _cb_key)
+    if not _cb_prompt:
+        _cb_prompt = st.session_state.pop("_chat_pending", None)
+    if _cb_prompt:
+        with st.chat_message("user"):
+            st.markdown(_cb_prompt)
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner("Looking up the data..."):
+                    _cb_answer, _cb_trace = chatbot.ask(
+                        _cb_prompt,
+                        [{"role": m["role"], "content": m["content"]} for m in _cb_msgs],
+                        _cb_executor, _cb_key, model=_cb_model,
+                    )
+            except chatbot.ChatError as _cb_err:
+                st.error(str(_cb_err))
+            else:
+                _cb_msgs.append({"role": "user", "content": _cb_prompt})
+                _cb_msgs.append({"role": "assistant", "content": _cb_answer, "trace": _cb_trace})
+                st.rerun()
+
 # -- PAGE: Settings --------------------------------------------
 if _nav_page == "Settings":
     st.header(":material/settings: Settings")
@@ -1427,6 +1518,7 @@ if _nav_page == "Settings":
         [
             ":material/block: Customer Ignore List",
             ":material/link: Account Match",
+            ":material/chat: Chatbot",
         ],
         horizontal=True, label_visibility="collapsed", key="settings_section",
     )
@@ -1683,10 +1775,52 @@ if _nav_page == "Settings":
                 _set_settings["custom_groups"] = []
                 _set_persist(_set_settings)
 
+    # -- Section C: Chatbot ---------------------------------------------
+    if _set_section == ":material/chat: Chatbot":
+        with st.container(border=True):
+            card_title("Chatbot", icon="chat")
+            st.caption(
+                "The Chatbot page sends **aggregated results** (never raw rows) to the "
+                "Anthropic API. The key below is saved in plaintext in `app/settings.json`; "
+                f"alternatively set the `{chatbot.API_KEY_ENV}` environment variable "
+                "(it takes precedence)."
+            )
+            if os.environ.get(chatbot.API_KEY_ENV, "").strip():
+                st.success(f"`{chatbot.API_KEY_ENV}` is set and will be used.")
+            _set_chat_key = st.text_input(
+                "Anthropic API key",
+                value=_set_settings.get("chat_api_key", ""),
+                type="password",
+                key="settings_chat_key",
+            )
+            _set_models = list(chatbot.CHAT_MODELS)
+            _set_cur_model = _set_settings.get("chat_model") or chatbot.DEFAULT_MODEL
+            if _set_cur_model not in _set_models:
+                _set_models.append(_set_cur_model)
+            _set_chat_model = st.selectbox(
+                "Model", _set_models, index=_set_models.index(_set_cur_model),
+                key="settings_chat_model",
+                help="Haiku is fastest and cheapest; Sonnet handles harder questions.",
+            )
+            _cc1, _cc2 = st.columns(2)
+            if _cc1.button("Save Chatbot Settings", icon=":material/save:", key="settings_chat_save"):
+                _set_settings["chat_api_key"] = _set_chat_key.strip()
+                _set_settings["chat_model"] = _set_chat_model
+                _set_persist(_set_settings)
+            if _cc2.button("Reset Chatbot Settings", icon=":material/restart_alt:", key="settings_reset_chat"):
+                _set_settings["chat_api_key"] = DEFAULT_SETTINGS["chat_api_key"]
+                _set_settings["chat_model"] = DEFAULT_SETTINGS["chat_model"]
+                st.session_state.pop("settings_chat_key", None)
+                st.session_state.pop("settings_chat_model", None)
+                _set_persist(_set_settings)
+
     if st.button("Reset ALL Settings to Default", icon=":material/restart_alt:", key="settings_reset_all", type="primary"):
         st.session_state["settings_confirm_reset_all"] = True
     if st.session_state.get("settings_confirm_reset_all"):
-        st.warning("This resets the Ignore List and Account Match to their shipped defaults.")
+        st.warning(
+            "This resets the Ignore List, Account Match and Chatbot settings "
+            "(including the saved API key) to their shipped defaults."
+        )
         _rc1, _rc2 = st.columns(2)
         if _rc1.button("Confirm Reset All", icon=":material/check:", key="settings_confirm_reset_all_btn"):
             save_settings(dict(DEFAULT_SETTINGS))

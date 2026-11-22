@@ -112,6 +112,8 @@ SalesReportTool/
 ├── app/                       # Platform-agnostic Streamlit app (shared, never forked)
 │   ├── app.py              # Streamlit UI, sidebar page navigation
 │   ├── charts.py           # Altair chart functions
+│   ├── chat_tools.py       # Read-only pandas tools the Chatbot calls (no Streamlit)
+│   ├── chatbot.py          # Claude tool-use loop for the Chatbot page
 │   ├── components.py       # Neutral kpi_card() / card_title() UI helpers
 │   ├── palette.py          # Fixed (non-theme) chart mark + KPI delta colors
 │   ├── fcst_loader.py      # FCST parser, blending, budget
@@ -283,9 +285,24 @@ Part number keyword search, UP/TP(USD) trend, GP% analysis.
 - Top N customers with FY Forecast and Achievement%
 - **Customer Drill-Down:** per-customer blended revenue chart + FY Forecast KPIs + category/QTY/PN detail
 
+### Chatbot
+Ask simple questions in plain language ("Top 5 customers this year?", "Monthly Tablet revenue in
+2025", "Full-year forecast vs budget?"). The model (Claude, via the Anthropic API) never does the
+math: it calls three read-only tools (`query_sales`, `get_kpis`, `get_forecast` in
+`app/chat_tools.py`) that compute from the same data the dashboard uses, so figures match the other
+pages. It honours the Ignore List, category overrides and the Sales Person filter, and an
+expander under each answer shows the lookups and tables behind it.
+
+- **Privacy:** only small aggregated results (top-50 rows max) are sent to the API — never raw
+  shipping rows.
+- **Setup:** add an Anthropic API key in **Settings ▸ Chatbot** (saved in plaintext in
+  `app/settings.json`) or set the `ANTHROPIC_API_KEY` environment variable (takes precedence).
+  The model defaults to Haiku; Sonnet is selectable for harder questions.
+- Q&A only — the chatbot cannot change filters, settings or data.
+
 ### Settings
 UI-based configuration, persisted to `app/settings.json` and effective immediately (no restart,
-no editing JSON by hand). Two sections, switched with a radio control rather than nested tabs
+no editing JSON by hand). Three sections, switched with a radio control rather than nested tabs
 (`st.tabs()` resets to its first item on the programmatic rerun each save triggers):
 
 - **🚫 Customer Ignore List** — add customers (from current data or free text) or remove them from
@@ -295,6 +312,7 @@ no editing JSON by hand). Two sections, switched with a radio control rather tha
   or a custom group; also supports creating/renaming/deleting custom groups and editing the plain
   Shipping Record customer-name aliases, with validation warnings for self-referencing or dangling
   mappings.
+- **💬 Chatbot** — Anthropic API key (masked input) and model choice for the Chatbot page.
 
 Each section has its own "Reset to Default" button, plus a "Reset ALL Settings" button at the
 bottom (with confirmation). There is no app-level theme setting — the app follows whichever
@@ -330,6 +348,18 @@ light/dark theme is configured in Streamlit itself.
 ---
 
 ## Change Log
+
+### v4.2 (November 2026)
+- **In-app Chatbot**: new sidebar page for plain-language questions about the data. Claude calls
+  read-only tools (`query_sales`, `get_kpis`, `get_forecast`) that reuse the app's own
+  calculations, so numbers match the dashboard; only aggregated results are sent to the API.
+  Each answer has a "Data used" expander showing the lookups behind it.
+- **Settings ▸ Chatbot**: API key + model selection, stored in `settings.json`
+  (`chat_api_key`, `chat_model`); `ANTHROPIC_API_KEY` env var takes precedence. "Reset ALL
+  Settings" also clears the saved key.
+- New dependency `anthropic` (added to `requirements.txt`, `build.bat`, `build-windows.yml`,
+  `build-mac.sh` via `--collect-all anthropic`).
+- Tests: `tests/test_chat_tools.py`, `tests/test_chatbot.py` (fake client, no network).
 
 ### v4.1 (September 2026)
 - **Sidebar page navigation**: the horizontal main tabs (Performance Report / Shipping Record

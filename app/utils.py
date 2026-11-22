@@ -253,6 +253,10 @@ DEFAULT_SETTINGS = {
     "customer_aliases": {},
     "fcst_customer_aliases": {},
     "custom_groups": [],
+    # In-app chatbot (Settings > Chatbot). The API key is stored in plaintext
+    # in settings.json; the ANTHROPIC_API_KEY env var takes precedence.
+    "chat_model": "claude-haiku-5-5",
+    "chat_api_key": "",
 }
 
 

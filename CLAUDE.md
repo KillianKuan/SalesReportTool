@@ -213,6 +213,29 @@ Dashboard 行為：
 
 ---
 
+## In-app Chatbot（v4.2）
+
+Sidebar 的 `Chatbot` 頁面（`app.py` 的 `if _nav_page == "Chatbot":`），讓使用者用自然語言
+詢問資料。**LLM 不做任何計算**：Claude（`anthropic` SDK，預設 `claude-haiku-5-5`）只能呼叫
+`chat_tools.py` 的三個唯讀 tool，數字與 Dashboard 同源。
+
+| 檔案 | 職責 |
+|------|------|
+| `chat_tools.py` | 純 pandas、無 Streamlit：`query_sales`（group_by customer/category/month/year/part_number/none）、`get_kpis`（含 YoY）、`get_forecast`（沿用 `fcst_loader.blend_actual_fcst`）、`TOOL_SCHEMAS`、`make_executor()`。每次最多回 50 列，只回彙總值。 |
+| `chatbot.py` | `ask()` tool-use 迴圈（最多 5 輪）、system prompt、`resolve_api_key()`（env `ANTHROPIC_API_KEY` 優先於 settings）、友善錯誤（`ChatError`）。可注入 fake `client` 測試。 |
+
+- 資料範圍：`all_df`（已套用 Ignore List / category overrides）再套用 Sales Person filter。
+  FCST 以 lazy callable 傳入 executor，只有模型呼叫 `get_forecast` 時才載入。
+- Settings：`DEFAULT_SETTINGS` 新增 `chat_model`、`chat_api_key`（明文存於 `settings.json`；UI 在
+  ⚙️ Settings ▸ Chatbot，password 輸入框）。「Reset ALL」會一併清除 key。
+- 隱私：只送出彙總結果（不含原始列）至 Anthropic API。
+- 打包：`anthropic` 為 lazy import，PyInstaller 偵測不到，所以 `build.bat`、
+  `build-windows.yml`、`build-mac.sh` 都要有 `--hidden-import anthropic --collect-all anthropic`。
+- 新增 tool 時：在 `chat_tools.py` 加函式 + `TOOL_SCHEMAS` + `make_executor` 分派 + 單元測試。
+- 測試：`tests/test_chat_tools.py`、`tests/test_chatbot.py`。
+
+---
+
 ## 跨平台打包與發版（CI）
 
 開發環境為 macOS（Apple Silicon），同事在 Windows 執行工具。**PyInstaller 無法跨平台編譯**，
@@ -358,6 +381,7 @@ v3.5 — Budget 整合 + Customer Drill-Down FCST + Signify 獨立分類。
 | `app.py` | Streamlit UI、sidebar 頁面導覽邏輯（含 ⚙️ Settings）、FCST/Budget blend 觸發、Customer Drill-Down FCST |
 | `utils.py` | 資料載入、Category 分類（含 CUSTOMER_CATEGORY_MAP）、KPI 計算、圖表資料準備、Settings 讀寫（`load_settings`/`save_settings`）、`inject_layout_css()` |
 | `charts.py` | Altair 圖表函式（Actual / Forecast / Budget 三線並呈），色彩取自 `palette.py`，主題交給 Streamlit 原生處理 |
+| `chat_tools.py` / `chatbot.py` | In-app Chatbot：唯讀 pandas tools + Claude tool-use 迴圈（見「In-app Chatbot」章節） |
 | `components.py` | `kpi_card()` / `card_title()` 中性 UI helper（繼承 Streamlit 色彩，不做主題切換） |
 | `palette.py` | 圖表 mark 與 KPI delta pill 的固定色票（非 Light/Dark 雙色組） |
 | `fcst_loader.py` | FCST Excel 解析、blend、Budget aggregation、customer name mapping（aliases.json + settings.json 疊加） |
