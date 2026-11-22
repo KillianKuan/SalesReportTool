@@ -231,9 +231,24 @@ class ProviderConfigTests(unittest.TestCase):
 
     def test_gemini_selected_uses_gemini_fields(self):
         s = {"chat_provider": "gemini", "chat_api_key": "a",
-             "chat_gemini_api_key": "g", "chat_gemini_model": "gemini-2.5-pro"}
+             "chat_gemini_api_key": "g", "chat_gemini_model": "gemini-3.5-flash-lite"}
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(chatbot.provider_config(s), ("gemini", "g", "gemini-2.5-pro"))
+            self.assertEqual(chatbot.provider_config(s), ("gemini", "g", "gemini-3.5-flash-lite"))
+
+    def test_retired_gemini_model_falls_back_to_default(self):
+        for old in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "", None):
+            self.assertEqual(chatbot.normalize_gemini_model(old), chatbot.DEFAULT_GEMINI_MODEL)
+        s = {"chat_provider": "gemini", "chat_gemini_api_key": "g",
+             "chat_gemini_model": "gemini-2.5-flash-lite"}
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(chatbot.provider_config(s)[2], chatbot.DEFAULT_GEMINI_MODEL)
+        self.assertNotIn(chatbot.DEFAULT_GEMINI_MODEL, chatbot.GEMINI_RETIRED_MODELS)
+        self.assertTrue(set(chatbot.GEMINI_MODELS).isdisjoint(chatbot.GEMINI_RETIRED_MODELS))
+
+    def test_retired_model_404_message(self):
+        msg = chatbot._gemini_error_message(
+            404, '{"error": {"message": "This model is no longer available to new users."}}')
+        self.assertIn("retired", msg)
 
     def test_gemini_env_vars(self):
         with mock.patch.dict(os.environ, {"GOOGLE_API_KEY": "envg"}, clear=True):

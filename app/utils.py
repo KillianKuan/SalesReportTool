@@ -261,7 +261,7 @@ DEFAULT_SETTINGS = {
     # caveat; GEMINI_API_KEY / GOOGLE_API_KEY env vars take precedence).
     "chat_provider": "anthropic",
     "chat_gemini_api_key": "",
-    "chat_gemini_model": "gemini-2.5-flash",
+    "chat_gemini_model": "gemini-3.5-flash",
 }
 
 

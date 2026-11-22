@@ -1872,6 +1872,8 @@ if _nav_page == "Settings":
                 key=f"settings_chat_key_{_set_prov}",
             )
             _set_cur_model = _set_settings.get(_set_model_field) or _set_model_default
+            if _set_is_gem:
+                _set_cur_model = chatbot.normalize_gemini_model(_set_cur_model)
             if _set_cur_model not in _set_model_opts:
                 _set_model_opts.append(_set_cur_model)
             _set_chat_model = st.selectbox(

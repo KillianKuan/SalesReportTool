@@ -27,8 +27,20 @@ API_KEY_ENV = "ANTHROPIC_API_KEY"
 # plain REST with urllib, so no extra dependency / packaging flags.
 PROVIDERS = {"anthropic": "Anthropic (Claude)", "gemini": "Google AI Studio (Gemini)"}
 DEFAULT_PROVIDER = "anthropic"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+# Verified against the live API (generateContent). "-latest" aliases follow
+# Google's current model but can be briefly overloaded (503).
+GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                 "gemini-flash-latest"]
+# Google stops serving old models to new users (404 "no longer available").
+# A saved choice from this list silently falls back to the default.
+GEMINI_RETIRED_MODELS = frozenset({"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"})
+
+
+def normalize_gemini_model(model: Optional[str]) -> str:
+    """Saved Gemini model, or the default if empty / known to be retired."""
+    model = (model or "").strip()
+    return DEFAULT_GEMINI_MODEL if not model or model in GEMINI_RETIRED_MODELS else model
 GEMINI_API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_TIMEOUT = 60
@@ -63,7 +75,7 @@ def provider_config(settings: Optional[dict] = None) -> tuple[str, str, str]:
     if provider not in PROVIDERS:
         provider = DEFAULT_PROVIDER
     if provider == "gemini":
-        model = settings.get("chat_gemini_model") or DEFAULT_GEMINI_MODEL
+        model = normalize_gemini_model(settings.get("chat_gemini_model"))
     else:
         model = settings.get("chat_model") or DEFAULT_MODEL
     return provider, resolve_api_key(settings, provider), model
@@ -157,6 +169,9 @@ def _gemini_error_message(status: int, body: str) -> str:
     if status in (401, 403):
         return "The Gemini API key is not allowed to use this model or region."
     if status == 404:
+        if "no longer available" in (detail or "").lower():
+            return ("The selected Gemini model has been retired by Google. Pick a newer one "
+                    "in Settings ▸ Chatbot.")
         return "The selected Gemini model was not found. Pick another one in Settings ▸ Chatbot."
     if status == 429:
         return ("Gemini rate limit reached (the free tier has low per-minute and daily "
