@@ -11,3 +11,6 @@ data/
 
 # Generated from assets/app.ico by build-mac.sh
 assets/app.icns
+
+# User settings (may contain API keys); created at runtime
+app/settings.json
