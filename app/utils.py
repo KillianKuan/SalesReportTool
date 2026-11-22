@@ -190,7 +190,10 @@ def load_overrides() -> dict:
         if not os.path.exists(OVERRIDES_FILE):
             return {}
         with open(OVERRIDES_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
+            text = f.read()
+        if not text.strip():
+            return {}  # blank placeholder file (ships in the repo): nothing saved yet
+        raw = json.loads(text)
         migrated = {}
         changed = False
         for row in raw:
@@ -237,7 +240,8 @@ def load_settings() -> dict:
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, encoding="utf-8") as f:
-                data = json.load(f)
+                text = f.read()
+            data = json.loads(text) if text.strip() else {}
             if isinstance(data, dict):
                 for key, default_val in DEFAULT_SETTINGS.items():
                     val = data.get(key)
