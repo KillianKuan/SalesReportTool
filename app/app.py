@@ -45,6 +45,7 @@ from charts import (
     chart_top_customers_bar, chart_customer_monthly, chart_customer_cat_donut,
     chart_customer_qty_by_cat,
     chart_revenue_trend_blended, chart_gp_trend_blended, chart_qty_trend_blended,
+    chat_chart,
 )
 from components import kpi_card, card_title
 from palette import POSITIVE, NEGATIVE
@@ -1469,6 +1470,10 @@ if _nav_page == "Chatbot":
 
     for _m in _cb_msgs:
         with st.chat_message(_m["role"]):
+            for _t in _m.get("trace") or []:
+                _spec = _t["output"].get("chart") if isinstance(_t["output"], dict) else None
+                if _spec:
+                    st.altair_chart(chat_chart(_spec), use_container_width=True)
             st.markdown(_m["content"])
             if _m.get("trace"):
                 with st.expander(f"Data used ({len(_m['trace'])} lookup(s))"):

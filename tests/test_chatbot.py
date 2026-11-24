@@ -169,7 +169,7 @@ class GeminiAskTests(unittest.TestCase):
         self.assertIn("gemini-2.5-flash:generateContent", url)
         self.assertEqual(headers["x-goog-api-key"], "gkey")
         names = [d["name"] for d in body["tools"][0]["functionDeclarations"]]
-        self.assertEqual(names, ["query_sales", "get_kpis", "get_forecast"])
+        self.assertEqual(names, ["query_sales", "show_chart", "get_kpis", "get_forecast"])
         self.assertIn("systemInstruction", body)
 
     def test_function_call_round_trip(self):

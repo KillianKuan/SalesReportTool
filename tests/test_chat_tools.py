@@ -99,5 +99,36 @@ class KpiAndExecutorTests(unittest.TestCase):
         json.dumps(run("get_kpis", {"year": 2025}))
 
 
+class ShowChartTests(unittest.TestCase):
+    def test_returns_chart_spec_and_rows(self):
+        r = chat_tools.show_chart(_df(), "bar", "customer", years=[2025])
+        self.assertEqual(r["chart"]["type"], "bar")
+        self.assertEqual(r["chart"]["points"][0], {"label": "Beta Co", "value": 4000})
+
+    def test_month_line_is_chronological(self):
+        r = chat_tools.show_chart(_df(), "line", "month", metric="gp")
+        labels = [p["label"] for p in r["chart"]["points"]]
+        self.assertEqual(labels, sorted(labels))
+        self.assertTrue(r["chart"]["chronological"])
+
+    def test_rejects_bad_input(self):
+        self.assertIn("error", chat_tools.show_chart(_df(), "radar", "customer"))
+        self.assertIn("error", chat_tools.show_chart(_df(), "bar", "none"))
+        self.assertIn("error", chat_tools.show_chart(_df(), "bar", "customer", metric="foo"))
+
+    def test_no_rows_has_no_chart(self):
+        r = chat_tools.show_chart(_df(), "bar", "customer", years=[1999])
+        self.assertNotIn("chart", r)
+
+    def test_executor_dispatch_and_renderer(self):
+        run = chat_tools.make_executor(_df(), None, 2025, 6)
+        out = run("show_chart", {"chart_type": "pie", "group_by": "category"})
+        self.assertIn("chart", out)
+        import charts
+        for t in ("bar", "line", "pie"):
+            spec = dict(out["chart"], type=t)
+            charts.chat_chart(spec).to_dict()
+
+
 if __name__ == "__main__":
     unittest.main()

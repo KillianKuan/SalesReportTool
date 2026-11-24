@@ -134,6 +134,52 @@ def query_sales(
     return out
 
 
+CHART_TYPES = ("bar", "line", "pie")
+
+
+def show_chart(
+    df: pd.DataFrame,
+    chart_type: str,
+    group_by: str,
+    metric: str = "revenue",
+    title: Optional[str] = None,
+    **query_args: Any,
+) -> dict:
+    """Chart request: runs query_sales and returns a render-ready spec.
+
+    The UI draws the chart from ``result["chart"]``; the model only learns that
+    the chart was shown, so it still never computes or sees raw rows.
+    """
+    chart_type = (chart_type or "bar").lower()
+    if chart_type not in CHART_TYPES:
+        return {"error": f"chart_type must be one of {list(CHART_TYPES)}"}
+    metric = (metric or "revenue").lower()
+    if metric not in _METRICS:
+        return {"error": f"metric must be one of {list(_METRICS)}"}
+    if (group_by or "none").lower() == "none":
+        return {"error": "A chart needs group_by (customer, category, month, year or part_number)."}
+    query_args.setdefault("sort_by", metric)
+    res = query_sales(df, group_by=group_by, **query_args)
+    if "error" in res or not res.get("rows"):
+        return res
+    group_by = group_by.lower()
+    points = [{"label": str(r[group_by]), "value": r[metric]} for r in res["rows"]]
+    return {
+        "filters": res.get("filters", {}),
+        "currency": "TWD",
+        "rows": res["rows"],
+        "chart": {
+            "type": chart_type,
+            "x": group_by,
+            "metric": metric,
+            "title": title or f"{metric} by {group_by}",
+            "points": points,
+            "chronological": group_by in ("month", "year"),
+        },
+        "note": "Chart displayed to the user. Do not repeat all the numbers; summarise the insight.",
+    }
+
+
 def get_kpis(df: pd.DataFrame, year: int) -> dict:
     """Headline KPIs for *year* with YoY change vs the previous year."""
     years = df["Ship Date"].dt.year
@@ -231,6 +277,31 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "show_chart",
+        "description": (
+            "Display a chart to the user (bar, line or pie) of one metric grouped by a "
+            "dimension. Use when the user asks for a chart/graph/plot/visualisation or a "
+            "trend. Takes the same filters as query_sales; line suits month/year trends, "
+            "bar suits rankings, pie suits shares of a total."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_type": {"type": "string", "enum": list(CHART_TYPES)},
+                "group_by": {"type": "string", "enum": [g for g in sorted(_GROUP_COLS) if g != "none"]},
+                "metric": {"type": "string", "enum": list(_METRICS),
+                           "description": "Value to plot (default revenue)."},
+                "title": {"type": "string"},
+                "years": {"type": "array", "items": {"type": "integer"}},
+                "months": {"type": "array", "items": {"type": "integer"}},
+                "category": {"type": "string"},
+                "customer": {"type": "string"},
+                "top_n": {"type": "integer", "description": f"Max points (default {DEFAULT_ROWS}, max {MAX_ROWS})."},
+            },
+            "required": ["chart_type", "group_by"],
+        },
+    },
+    {
         "name": "get_kpis",
         "description": "Headline KPIs (revenue, gp, gp_pct, qty) for one year with YoY change vs the prior year.",
         "input_schema": {
@@ -270,6 +341,8 @@ def make_executor(
         try:
             if name == "query_sales":
                 return query_sales(df, **args)
+            if name == "show_chart":
+                return show_chart(df, **args)
             if name == "get_kpis":
                 return get_kpis(df, **args)
             if name == "get_forecast":

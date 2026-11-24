@@ -425,3 +425,32 @@ def chart_gp_trend_blended(blended_monthly_df: pd.DataFrame) -> alt.LayerChart:
         )
     )
     return alt.layer(bars_main, bars_budget, line).resolve_scale(y="independent")
+
+
+def chat_chart(spec: dict) -> alt.Chart:
+    """Render a chatbot ``show_chart`` spec (bar / line / pie)."""
+    df = pd.DataFrame(spec["points"])
+    metric = spec["metric"]
+    fmt = ".1f" if metric == "gp_pct" else ",.0f"
+    val_title = {"revenue": "Revenue (TWD)", "gp": "GP (TWD)", "gp_pct": "GP%", "qty": "Qty"}[metric]
+    order = list(df["label"])  # keep query order (chronological or ranked)
+    tip = ["label:N", alt.Tooltip("value:Q", title=val_title, format=fmt)]
+    if spec["type"] == "pie":
+        base = alt.Chart(df).mark_arc(innerRadius=50).encode(
+            theta=alt.Theta("value:Q", stack=True),
+            color=alt.Color("label:N", title=spec["x"].replace("_", " ").title()),
+            tooltip=tip,
+        )
+    elif spec["type"] == "line":
+        base = alt.Chart(df).mark_line(color=PRIMARY, point=alt.OverlayMarkDef(color=PRIMARY)).encode(
+            x=alt.X("label:N", title=spec["x"].title(), sort=order),
+            y=alt.Y("value:Q", title=val_title),
+            tooltip=tip,
+        )
+    else:
+        base = alt.Chart(df).mark_bar(color=PRIMARY).encode(
+            x=alt.X("label:N", title=spec["x"].replace("_", " ").title(), sort=order),
+            y=alt.Y("value:Q", title=val_title),
+            tooltip=tip,
+        )
+    return base.properties(title=spec.get("title", ""), height=320)

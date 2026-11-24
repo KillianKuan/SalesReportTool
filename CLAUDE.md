@@ -221,7 +221,7 @@ Sidebar 的 `Chatbot` 頁面（`app.py` 的 `if _nav_page == "Chatbot":`），�
 
 | 檔案 | 職責 |
 |------|------|
-| `chat_tools.py` | 純 pandas、無 Streamlit：`query_sales`（group_by customer/category/month/year/part_number/none）、`get_kpis`（含 YoY）、`get_forecast`（沿用 `fcst_loader.blend_actual_fcst`）、`TOOL_SCHEMAS`、`make_executor()`。每次最多回 50 列，只回彙總值。 |
+| `chat_tools.py` | 純 pandas、無 Streamlit：`query_sales`（group_by customer/category/month/year/part_number/none）、`show_chart`（bar/line/pie，內部呼叫 `query_sales`，回傳 `chart` spec，UI 以 `charts.chat_chart()` 用 Altair 繪製，模型不碰原始資料）、`get_kpis`（含 YoY）、`get_forecast`（沿用 `fcst_loader.blend_actual_fcst`）、`TOOL_SCHEMAS`、`make_executor()`。每次最多回 50 列，只回彙總值。 |
 | `chatbot.py` | `ask()` tool-use 迴圈（最多 5 輪）、system prompt、`resolve_api_key()`（env `ANTHROPIC_API_KEY` 優先於 settings）、友善錯誤（`ChatError`）。可注入 fake `client` 測試。 |
 
 - 資料範圍：`all_df`（已套用 Ignore List / category overrides）再套用 Sales Person filter。

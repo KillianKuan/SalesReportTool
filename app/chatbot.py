@@ -99,6 +99,9 @@ def build_system_prompt(today: Optional[datetime] = None) -> str:
         "- If a tool returns an error or no rows, say so plainly; do not guess.\n"
         "- If the question is not about this sales data, politely say you can only answer "
         "questions about it.\n"
+        "- When the user asks for a chart, graph, plot or visualisation, call show_chart "
+        "(the app draws it); then add one or two sentences of insight instead of repeating "
+        "every number.\n"
         "- Keep answers concise. Use a small markdown table for rankings or trends."
     )
 
