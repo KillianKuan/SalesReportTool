@@ -161,6 +161,70 @@ def ask(
                           model or DEFAULT_MODEL, client)
 
 
+def generate_text(
+    prompt: str,
+    system: str,
+    api_key: str,
+    model: Optional[str] = None,
+    provider: str = DEFAULT_PROVIDER,
+    client: Any = None,
+    max_tokens: int = 1500,
+    json_mode: bool = False,
+) -> str:
+    """One-shot, tool-less completion (used for dashboard insights).
+
+    *client* is the same test seam as in ask(). Raises ChatError on failure.
+    """
+    if provider == "gemini":
+        if not api_key and client is None:
+            raise ChatError("No Gemini API key configured.")
+        post = client or _gemini_post
+        model = model or DEFAULT_GEMINI_MODEL
+        config: dict = {"maxOutputTokens": max_tokens * 2}
+        if json_mode:
+            config["responseMimeType"] = "application/json"
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": config,
+        }
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        try:
+            data = post(GEMINI_ENDPOINT.format(model=model), headers, body)
+        except ChatError:
+            raise
+        except Exception as exc:
+            _logger.warning("Gemini request failed", exc_info=True)
+            raise ChatError("The assistant ran into an error. Please try again.") from exc
+        cands = data.get("candidates") or []
+        parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+        if not text:
+            raise ChatError("Gemini returned no answer.")
+        return text
+
+    if not api_key and client is None:
+        raise ChatError("No API key configured.")
+    if client is None:
+        client = _make_client(api_key)
+    try:
+        resp = client.messages.create(
+            model=model or DEFAULT_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except ChatError:
+        raise
+    except Exception as exc:
+        _logger.warning("Text generation failed", exc_info=True)
+        raise ChatError(_friendly_error(exc)) from exc
+    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    if not text:
+        raise ChatError("The model returned no answer.")
+    return text
+
+
 def _gemini_error_message(status: int, body: str) -> str:
     detail = ""
     try:

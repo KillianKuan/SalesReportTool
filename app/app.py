@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fcst_loader
 import chatbot
 import chat_tools
+import insights
 
 from utils import (
     DATA_DIR, CAT_ORDER, _rules_key, _normalize_name,
@@ -1010,6 +1011,74 @@ if _nav_page == "Company Dashboard":
             return "N/A"
         return f"{val:+,.1f}{suffix}"
 
+    # -- AI insights: executive summary + per-section captions ----------
+    _ins_sec: dict = {}
+
+    def _ins_caption(section):
+        _txt = _ins_sec.get(section)
+        if _txt:
+            st.caption(f":material/auto_awesome: {_txt}")
+
+    _ins_settings = st.session_state.get("app_settings") or load_settings()
+    if _ins_settings.get("insights_enabled", True):
+        _ins_src = (
+            all_df[all_df["Customer Name"].isin(_sp_visible_custs)]
+            if _sp_visible_custs else all_df
+        )
+        _ins_budget = None
+        if not _blended_monthly.empty and not _budget_monthly.empty:
+            _ins_budget = {
+                "ytd_rev": float(_blended_monthly.loc[
+                    _blended_monthly["Source"] == "Actual", "Revenue"].sum()),
+                "fy_budget": float(_budget_monthly["Revenue"].sum()),
+                "fy_forecast": float(_blended_monthly["Revenue"].sum()),
+            }
+        _ins_force = st.session_state.pop("_ins_force", False)
+        _ins_has_key = bool(chatbot.provider_config(_ins_settings)[1])
+        with st.spinner("Preparing AI summary..."):
+            _ins = insights.get_insights(
+                _ins_src, _dash_max_yr, settings=_ins_settings,
+                budget=_ins_budget, force=_ins_force,
+            )
+        _ins_sec = _ins["summary"]["sections"]
+        _ins_by_id = {f["id"]: f for f in _ins["findings"]}
+        _ins_icons = {"critical": "🔴", "warning": "🟠", "info": "🟢"}
+        with st.container(border=True):
+            card_title("Executive Summary", icon="auto_awesome")
+            st.markdown(f"**{_ins['summary']['headline']}**")
+            for _i, _item in enumerate(_ins["summary"]["top3"]):
+                _f = _ins_by_id.get(_item["id"])
+                if not _f:
+                    continue
+                _ic1, _ic2 = st.columns([6, 1], vertical_alignment="center")
+                with _ic1:
+                    st.markdown(f"{_ins_icons[_f['severity']]} **{_f['title']}**  \n{_item['text']}")
+                with _ic2:
+                    if _ins_has_key and st.button(
+                        "Ask AI", key=f"ins_ask_{_i}", icon=":material/chat:",
+                    ):
+                        st.session_state["_chat_pending"] = _f["question"]
+                        st.session_state["nav_page"] = "Chatbot"
+                        st.rerun()
+            _if1, _if2 = st.columns([5, 1], vertical_alignment="center")
+            with _if1:
+                if _ins["source"] == "ai":
+                    st.caption(f"AI summary · generated {_ins['generated_at']}")
+                elif _ins_has_key:
+                    st.caption("Rule-based summary (AI summary unavailable right now).")
+                else:
+                    st.caption(
+                        "Rule-based summary. Add an API key in Settings ▸ Chatbot "
+                        "for AI-written highlights."
+                    )
+                if _ins["error"] and _ins["error"] != "cooldown":
+                    st.caption(f":material/warning: {_ins['error']}")
+            with _if2:
+                if _ins_has_key and st.button("Regenerate", key="ins_refresh",
+                                              icon=":material/refresh:"):
+                    st.session_state["_ins_force"] = True
+                    st.rerun()
+
     # -- Prep for the first-screen [2, 1] row -------------------------
     _trend = build_monthly_trend(dash_df)
     _multi_yr = len(_dash_years) > 1
@@ -1055,6 +1124,7 @@ if _nav_page == "Company Dashboard":
                         chart_qty_by_month(dash_df),
                         use_container_width=True,
                     )
+            _ins_caption("trend")
     with _fs_right:
         with st.container(border=True):
             card_title("Overview", icon="summarize")
@@ -1097,6 +1167,7 @@ if _nav_page == "Company Dashboard":
                 kpi_card("FY GP Margin Forecast", f"{_fy_gp_pct:.1f}%")
             with _fk4:
                 kpi_card("FY Units Forecast", f"{_fy_qty:,.0f}")
+            _ins_caption("forecast")
 
         # Budget Achievement & PO Coverage
         try:
@@ -1137,6 +1208,7 @@ if _nav_page == "Company Dashboard":
                 chart_gp_dual_axis(_trend),
                 use_container_width=True,
             )
+        _ins_caption("margin")
 
     # -- Category Analysis ---------------------------------------------
     with st.container(border=True):
@@ -1154,6 +1226,7 @@ if _nav_page == "Company Dashboard":
             st.altair_chart(
                 chart_category_stacked(_cat_mo), use_container_width=True,
             )
+        _ins_caption("category")
         if not _fcst_cat_monthly.empty:
             _cat_row2_c1, _cat_row2_c2 = st.columns(2)
         else:
@@ -1187,6 +1260,7 @@ if _nav_page == "Company Dashboard":
             st.altair_chart(
                 chart_top_customers_bar(_top), use_container_width=True,
             )
+            _ins_caption("customers")
         with _tn2:
             card_title(f"Top {_top_n} Customers")
 
@@ -1899,6 +1973,47 @@ if _nav_page == "Settings":
                            "settings_chat_key_gemini", "settings_chat_model_anthropic",
                            "settings_chat_model_gemini"):
                     st.session_state.pop(_k, None)
+                _set_persist(_set_settings)
+
+        with st.container(border=True):
+            card_title("Dashboard AI Insights", icon="auto_awesome")
+            st.caption(
+                "Executive summary, top-3 alerts and one-line chart captions on the Company "
+                "Dashboard. Uses the provider and key above; only aggregated figures are "
+                "sent. Summaries are cached, so the API is called only when the data "
+                "changes or the refresh interval below has passed. Without a key you still "
+                "get rule-based alerts."
+            )
+            _ins_on = st.toggle(
+                "Show AI insights on the dashboard",
+                value=bool(_set_settings.get("insights_enabled", True)),
+                key="settings_insights_enabled",
+            )
+            _ins_refresh_opts = ["manual", "weekly", "monthly"]
+            _ins_refresh_cur = _set_settings.get("insights_refresh")
+            _ins_refresh = st.radio(
+                "Refresh AI summary", _ins_refresh_opts,
+                index=_ins_refresh_opts.index(_ins_refresh_cur)
+                if _ins_refresh_cur in _ins_refresh_opts else 1,
+                format_func=lambda r: {
+                    "manual": "Only when data changes / on Regenerate",
+                    "weekly": "Weekly (and when data changes)",
+                    "monthly": "Monthly (and when data changes)",
+                }[r],
+                key="settings_insights_refresh",
+            )
+            _ins_lang_opts = list(insights.LANGS)
+            _ins_lang_cur = _set_settings.get("insights_lang")
+            _ins_lang = st.selectbox(
+                "Summary language", _ins_lang_opts,
+                index=_ins_lang_opts.index(_ins_lang_cur) if _ins_lang_cur in _ins_lang_opts else 0,
+                format_func=lambda c: insights.LANGS[c],
+                key="settings_insights_lang",
+            )
+            if st.button("Save Insights Settings", icon=":material/save:", key="settings_insights_save"):
+                _set_settings["insights_enabled"] = bool(_ins_on)
+                _set_settings["insights_refresh"] = _ins_refresh
+                _set_settings["insights_lang"] = _ins_lang
                 _set_persist(_set_settings)
 
     if st.button("Reset ALL Settings to Default", icon=":material/restart_alt:", key="settings_reset_all", type="primary"):

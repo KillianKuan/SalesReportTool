@@ -14,3 +14,4 @@ assets/app.icns
 
 # User settings (may contain API keys); created at runtime
 app/settings.json
+app/insights_cache.json

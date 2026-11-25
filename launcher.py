@@ -68,7 +68,7 @@ DATA_SUBDIRS = ("Over the Years", "Current Year", "FCST")
 # bundle. User overrides on top of it live in settings.json's
 # "customer_aliases" / "fcst_customer_aliases" keys instead, so the two
 # layers - bundled defaults vs. user overrides - never collide on disk.
-USER_STATE_FILES = ("overrides.json", "settings.json")
+USER_STATE_FILES = ("overrides.json", "settings.json", "insights_cache.json")
 _USER_STATE_DEFAULTS = {"overrides.json": "[]", "settings.json": "{}"}
 
 # Files that must exist (and be non-empty) in a mirrored app/ copy before it

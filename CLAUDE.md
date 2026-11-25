@@ -242,6 +242,31 @@ Sidebar 的 `Chatbot` 頁面（`app.py` 的 `if _nav_page == "Chatbot":`），�
 
 ---
 
+## Dashboard AI Insights（v4.3）
+
+Company Dashboard 頂部的 **Executive Summary**（headline + top 3 提醒，每則可按 *Ask AI* 帶著
+預填問題跳到 Chatbot），以及每個圖表區塊下方一兩行 `:material/auto_awesome:` 說明
+（trend / margin / category / customers / forecast）。目標讀者是高階主管。
+
+| 檔案 | 職責 |
+|------|------|
+| `insights.py` | 純 pandas、無 Streamlit。`detect_findings()` 規則偵測（連續月份營收下滑會合併成一則，如 7–8 月；毛利率偏低、類別／前十大客戶年減、客戶集中度、預算進度與全年預測落差）；`generate_ai_summary()` 一次 API 呼叫產出 headline / top3 / 各區塊文字；`get_insights()` 快取 + 排程 + 失敗降級。 |
+| `chatbot.generate_text()` | 無 tool 的單次生成（Anthropic / Gemini 共用同一組 provider 設定與 key）。 |
+
+- **LLM 不算數字**：偵測與金額全由 pandas 算好，模型只負責改寫成主管看得懂的句子，prompt 要求只能用
+  給定數字；`top3` 的 id 必須存在於 findings，否則丟棄。
+- **完成月份**：只評斷「已結束且資料已涵蓋到月底（出貨日 ≥ 25 日）」的月份，避免資料檔太舊時把殘缺月份
+  誤報成崩跌（`insights._completed_months`）。
+- **快取**：`app/insights_cache.json`（git-ignored，列入 launcher `USER_STATE_FILES` 升級保留），以資料
+  fingerprint 為 key。重新生成條件：資料變動，或超過排程（Settings ▸ Chatbot ▸ Dashboard AI Insights：
+  manual / weekly / monthly）。這是「開啟 Dashboard 時若過期就補生成」，**不是**背景排程；app 沒開就不會跑。
+- **降級**：沒有 API key 或呼叫失敗 → 規則式文字照常顯示；失敗後 10 分鐘內不重打（按 *Regenerate* 可強制）。
+- 設定鍵：`insights_enabled` / `insights_refresh` / `insights_lang`（zh-TW | en），位於 `DEFAULT_SETTINGS`。
+- 隱私：只送出彙總事實表與 findings，不含原始列。
+- 測試：`tests/test_insights.py`。
+
+---
+
 ## 跨平台打包與發版（CI）
 
 開發環境為 macOS（Apple Silicon），同事在 Windows 執行工具。**PyInstaller 無法跨平台編譯**，

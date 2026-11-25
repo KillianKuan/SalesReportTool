@@ -262,6 +262,11 @@ DEFAULT_SETTINGS = {
     "chat_provider": "anthropic",
     "chat_gemini_api_key": "",
     "chat_gemini_model": "gemini-3.5-flash",
+    # Dashboard AI insights (reuses the chatbot provider/key above).
+    # insights_refresh: manual | weekly | monthly; insights_lang: zh-TW | en
+    "insights_enabled": True,
+    "insights_refresh": "weekly",
+    "insights_lang": "zh-TW",
 }
 
 
