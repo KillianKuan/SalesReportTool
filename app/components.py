@@ -8,6 +8,8 @@ in utils.py for the CSS classes these helpers render into.
 
 from __future__ import annotations
 
+import re
+
 import html
 
 import streamlit as st
@@ -68,3 +70,11 @@ def kpi_card(
 </div>""",
         unsafe_allow_html=True,
     )
+
+
+_UNESCAPED_DOLLAR = re.compile(r"(?<!\\)\$")
+
+
+def md_safe(text) -> str:
+    """Escape ``$`` so Streamlit markdown doesn't treat ``NT$1.2M ... NT$3M`` as LaTeX math."""
+    return _UNESCAPED_DOLLAR.sub(r"\\$", "" if text is None else str(text))

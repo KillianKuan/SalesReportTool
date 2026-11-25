@@ -48,7 +48,7 @@ from charts import (
     chart_revenue_trend_blended, chart_gp_trend_blended, chart_qty_trend_blended,
     chat_chart,
 )
-from components import kpi_card, card_title
+from components import kpi_card, card_title, md_safe
 from palette import POSITIVE, NEGATIVE
 
 st.set_page_config(
@@ -1017,7 +1017,7 @@ if _nav_page == "Company Dashboard":
     def _ins_caption(section):
         _txt = _ins_sec.get(section)
         if _txt:
-            st.caption(f":material/auto_awesome: {_txt}")
+            st.caption(f":material/auto_awesome: {md_safe(_txt)}")
 
     _ins_settings = st.session_state.get("app_settings") or load_settings()
     if _ins_settings.get("insights_enabled", True):
@@ -1045,14 +1045,14 @@ if _nav_page == "Company Dashboard":
         _ins_icons = {"critical": "🔴", "warning": "🟠", "info": "🟢"}
         with st.container(border=True):
             card_title("Executive Summary", icon="auto_awesome")
-            st.markdown(f"**{_ins['summary']['headline']}**")
+            st.markdown(f"**{md_safe(_ins['summary']['headline'])}**")
             for _i, _item in enumerate(_ins["summary"]["top3"]):
                 _f = _ins_by_id.get(_item["id"])
                 if not _f:
                     continue
                 _ic1, _ic2 = st.columns([6, 1], vertical_alignment="center")
                 with _ic1:
-                    st.markdown(f"{_ins_icons[_f['severity']]} **{_f['title']}**  \n{_item['text']}")
+                    st.markdown(f"{_ins_icons[_f['severity']]} **{md_safe(_f['title'])}**  \n{md_safe(_item['text'])}")
                 with _ic2:
                     if _ins_has_key and st.button(
                         "Ask AI", key=f"ins_ask_{_i}", icon=":material/chat:",
@@ -1548,7 +1548,7 @@ if _nav_page == "Chatbot":
                 _spec = _t["output"].get("chart") if isinstance(_t["output"], dict) else None
                 if _spec:
                     st.altair_chart(chat_chart(_spec), use_container_width=True)
-            st.markdown(_m["content"])
+            st.markdown(md_safe(_m["content"]))
             if _m.get("trace"):
                 with st.expander(f"Data used ({len(_m['trace'])} lookup(s))"):
                     for _t in _m["trace"]:
@@ -1564,7 +1564,7 @@ if _nav_page == "Chatbot":
         _cb_prompt = st.session_state.pop("_chat_pending", None)
     if _cb_prompt:
         with st.chat_message("user"):
-            st.markdown(_cb_prompt)
+            st.markdown(md_safe(_cb_prompt))
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Looking up the data..."):
